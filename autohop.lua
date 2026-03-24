@@ -2,6 +2,7 @@ local HttpService = game:GetService("HttpService")
 local TeleportService = game:GetService("TeleportService")
 local Players = game:GetService("Players")
 local CoreGui = game:GetService("CoreGui")
+local UserInputService = game:GetService("UserInputService")
 
 local LocalPlayer = Players.LocalPlayer
 
@@ -15,7 +16,7 @@ end
 
 local placeId = game.PlaceId
 
-local TELEPORT_COOLDOWN = 55
+local TELEPORT_COOLDOWN = 40
 local CHECK_DELAY = 1
 local MIN_SPROUT_SECONDS = 30
 local MAX_PLAYERS = 4
@@ -28,6 +29,7 @@ getgenv().BSS_SERVER_JOIN_TIME = getgenv().BSS_SERVER_JOIN_TIME or tick()
 getgenv().BSS_CURRENT_SERVER_TYPE = getgenv().BSS_CURRENT_SERVER_TYPE or nil
 getgenv().BSS_CURRENT_SERVER_RARITY = getgenv().BSS_CURRENT_SERVER_RARITY or nil
 getgenv().BSS_NEXT_TELEPORT_COOLDOWN = getgenv().BSS_NEXT_TELEPORT_COOLDOWN or TELEPORT_COOLDOWN
+getgenv().BSS_UI_COLLAPSED = getgenv().BSS_UI_COLLAPSED or false
 
 local VISITED = getgenv().BSS_VISITED_JOB_IDS
 local RECENT = getgenv().BSS_RECENT_JOB_IDS
@@ -312,16 +314,13 @@ local function sortServersForUi(servers)
     local copy = {}
 
     for _, server in ipairs(servers) do
-        table.insert(copy, server)
+        if getPriority(server) > 0 then
+            table.insert(copy, server)
+        end
     end
 
     table.sort(copy, function(a, b)
-        if isBetterServer(a, b) then
-            return true
-        elseif isBetterServer(b, a) then
-            return false
-        end
-        return false
+        return isBetterServer(a, b)
     end)
 
     return copy
@@ -337,8 +336,8 @@ gui.Parent = CoreGui
 
 local frame = Instance.new("Frame")
 frame.Parent = gui
-frame.Size = UDim2.new(0, 340, 0, 420)
-frame.Position = UDim2.new(0, 15, 0.5, -210)
+frame.Size = UDim2.new(0, 340, 0, getgenv().BSS_UI_COLLAPSED and 44 or 420)
+frame.Position = UDim2.new(1, -355, 0.5, getgenv().BSS_UI_COLLAPSED and -22 or -210)
 frame.BackgroundColor3 = Color3.fromRGB(18, 18, 22)
 frame.BorderSizePixel = 0
 
@@ -372,12 +371,27 @@ local title = Instance.new("TextLabel")
 title.Parent = header
 title.BackgroundTransparency = 1
 title.Position = UDim2.new(0, 14, 0, 0)
-title.Size = UDim2.new(1, -28, 1, 0)
+title.Size = UDim2.new(1, -70, 1, 0)
 title.Font = Enum.Font.GothamBold
 title.TextSize = 16
 title.TextColor3 = Color3.fromRGB(255, 255, 255)
 title.TextXAlignment = Enum.TextXAlignment.Left
 title.Text = "AutoHop"
+
+local collapseButton = Instance.new("TextButton")
+collapseButton.Parent = header
+collapseButton.Size = UDim2.new(0, 32, 0, 24)
+collapseButton.Position = UDim2.new(1, -40, 0.5, -12)
+collapseButton.BackgroundColor3 = Color3.fromRGB(34, 34, 42)
+collapseButton.BorderSizePixel = 0
+collapseButton.Font = Enum.Font.GothamBold
+collapseButton.TextSize = 16
+collapseButton.TextColor3 = Color3.fromRGB(230, 230, 235)
+collapseButton.Text = getgenv().BSS_UI_COLLAPSED and "+" or "—"
+
+local collapseCorner = Instance.new("UICorner")
+collapseCorner.CornerRadius = UDim.new(0, 6)
+collapseCorner.Parent = collapseButton
 
 local statusLabel = Instance.new("TextLabel")
 statusLabel.Parent = frame
@@ -457,6 +471,55 @@ layout.Parent = scrolling
 layout.Padding = UDim.new(0, 6)
 layout.SortOrder = Enum.SortOrder.LayoutOrder
 
+local function setCollapsed(collapsed)
+    getgenv().BSS_UI_COLLAPSED = collapsed
+    collapseButton.Text = collapsed and "+" or "—"
+
+    statusLabel.Visible = not collapsed
+    cooldownLabel.Visible = not collapsed
+    targetLabel.Visible = not collapsed
+    listHeader.Visible = not collapsed
+    listContainer.Visible = not collapsed
+
+    frame.Size = UDim2.new(0, 340, 0, collapsed and 44 or 420)
+end
+
+collapseButton.MouseButton1Click:Connect(function()
+    setCollapsed(not getgenv().BSS_UI_COLLAPSED)
+end)
+
+setCollapsed(getgenv().BSS_UI_COLLAPSED)
+
+local dragging = false
+local dragStart
+local startPos
+
+header.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then
+        dragging = true
+        dragStart = input.Position
+        startPos = frame.Position
+
+        input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then
+                dragging = false
+            end
+        end)
+    end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+    if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+        local delta = input.Position - dragStart
+        frame.Position = UDim2.new(
+            startPos.X.Scale,
+            startPos.X.Offset + delta.X,
+            startPos.Y.Scale,
+            startPos.Y.Offset + delta.Y
+        )
+    end
+end)
+
 local function clearServerList()
     for _, child in ipairs(scrolling:GetChildren()) do
         if child:IsA("Frame") then
@@ -469,7 +532,6 @@ local function formatServerLine(server)
     local serverType = tostring(server.type or "?")
     local rarity = tostring(server.rarity or "")
     local players = tonumber(server.playerCount) or 0
-    local priority = getPriority(server)
     local remaining = getRemainingSeconds(server)
     local color = getServerColor(server)
 
@@ -494,7 +556,7 @@ local function formatServerLine(server)
         end
     end
 
-    return string.format("%s | %dP | Pr:%d%s", nameText, players, priority, extra)
+    return string.format("%s | %dP%s", nameText, players, extra)
 end
 
 local function updateServerList(servers, best)
@@ -504,36 +566,35 @@ local function updateServerList(servers, best)
     local shown = 0
 
     for _, server in ipairs(sorted) do
-        if getPriority(server) > 0 then
-            shown = shown + 1
-            if shown > 12 then
-                break
-            end
-
-            local item = Instance.new("Frame")
-            item.Parent = scrolling
-            item.Size = UDim2.new(1, 0, 0, 34)
-            item.BackgroundColor3 = (best and server.jobId == best.jobId)
-                and Color3.fromRGB(36, 58, 44)
-                or Color3.fromRGB(28, 28, 34)
-            item.BorderSizePixel = 0
-
-            local itemCorner = Instance.new("UICorner")
-            itemCorner.CornerRadius = UDim.new(0, 6)
-            itemCorner.Parent = item
-
-            local itemText = Instance.new("TextLabel")
-            itemText.Parent = item
-            itemText.BackgroundTransparency = 1
-            itemText.Position = UDim2.new(0, 10, 0, 0)
-            itemText.Size = UDim2.new(1, -20, 1, 0)
-            itemText.Font = Enum.Font.Gotham
-            itemText.TextSize = 12
-            itemText.TextColor3 = Color3.fromRGB(235, 235, 240)
-            itemText.TextXAlignment = Enum.TextXAlignment.Left
-            itemText.RichText = true
-            itemText.Text = formatServerLine(server)
+        shown = shown + 1
+        if shown > 12 then
+            break
         end
+
+        local item = Instance.new("Frame")
+        item.Parent = scrolling
+        item.Size = UDim2.new(1, 0, 0, 34)
+        item.BackgroundColor3 = (best and server.jobId == best.jobId)
+            and Color3.fromRGB(36, 58, 44)
+            or Color3.fromRGB(28, 28, 34)
+        item.BorderSizePixel = 0
+        item.LayoutOrder = shown
+
+        local itemCorner = Instance.new("UICorner")
+        itemCorner.CornerRadius = UDim.new(0, 6)
+        itemCorner.Parent = item
+
+        local itemText = Instance.new("TextLabel")
+        itemText.Parent = item
+        itemText.BackgroundTransparency = 1
+        itemText.Position = UDim2.new(0, 10, 0, 0)
+        itemText.Size = UDim2.new(1, -20, 1, 0)
+        itemText.Font = Enum.Font.Gotham
+        itemText.TextSize = 12
+        itemText.TextColor3 = Color3.fromRGB(235, 235, 240)
+        itemText.TextXAlignment = Enum.TextXAlignment.Left
+        itemText.RichText = true
+        itemText.Text = formatServerLine(server)
     end
 
     if shown == 0 then
@@ -606,11 +667,10 @@ local function updateTopInfo(best, force, joinedAgo, cooldown)
         end
 
         targetLabel.Text = string.format(
-            "Target: %s | Field: %s | Players: %s | Priority: %d%s",
+            "Target: %s | Field: %s | Players: %s%s",
             nameText,
             tostring(best.field or "?"),
             tostring(best.playerCount or "?"),
-            getPriority(best),
             extra
         )
     else
