@@ -1,6 +1,7 @@
 local HttpService = game:GetService("HttpService")
 local TeleportService = game:GetService("TeleportService")
 local Players = game:GetService("Players")
+local CoreGui = game:GetService("CoreGui")
 
 local LocalPlayer = Players.LocalPlayer
 
@@ -14,7 +15,7 @@ end
 
 local placeId = game.PlaceId
 
-local TELEPORT_COOLDOWN = 50
+local TELEPORT_COOLDOWN = 55
 local CHECK_DELAY = 1
 local MIN_SPROUT_SECONDS = 30
 local MAX_PLAYERS = 4
@@ -32,147 +33,9 @@ local VISITED = getgenv().BSS_VISITED_JOB_IDS
 local RECENT = getgenv().BSS_RECENT_JOB_IDS
 
 local function safeDestroyGui()
-    local coreGui = game:GetService("CoreGui")
-    local old = coreGui:FindFirstChild("BSS_UI")
+    local old = CoreGui:FindFirstChild("BSS_UI")
     if old then
         old:Destroy()
-    end
-end
-
-safeDestroyGui()
-
-local gui = Instance.new("ScreenGui")
-gui.Name = "BSS_UI"
-gui.ResetOnSpawn = false
-gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-gui.Parent = game:GetService("CoreGui")
-
-local frame = Instance.new("Frame")
-frame.Parent = gui
-frame.Size = UDim2.new(0, 340, 0, 420)
-frame.Position = UDim2.new(0, 15, 0.5, -210)
-frame.BackgroundColor3 = Color3.fromRGB(18, 18, 22)
-frame.BorderSizePixel = 0
-
-local corner = Instance.new("UICorner")
-corner.CornerRadius = UDim.new(0, 10)
-corner.Parent = frame
-
-local stroke = Instance.new("UIStroke")
-stroke.Color = Color3.fromRGB(45, 45, 55)
-stroke.Thickness = 1
-stroke.Parent = frame
-
-local header = Instance.new("Frame")
-header.Parent = frame
-header.Size = UDim2.new(1, 0, 0, 44)
-header.BackgroundColor3 = Color3.fromRGB(24, 24, 30)
-header.BorderSizePixel = 0
-
-local headerCorner = Instance.new("UICorner")
-headerCorner.CornerRadius = UDim.new(0, 10)
-headerCorner.Parent = header
-
-local headerFix = Instance.new("Frame")
-headerFix.Parent = header
-headerFix.Position = UDim2.new(0, 0, 1, -10)
-headerFix.Size = UDim2.new(1, 0, 0, 10)
-headerFix.BackgroundColor3 = header.BackgroundColor3
-headerFix.BorderSizePixel = 0
-
-local title = Instance.new("TextLabel")
-title.Parent = header
-title.BackgroundTransparency = 1
-title.Position = UDim2.new(0, 14, 0, 0)
-title.Size = UDim2.new(1, -28, 1, 0)
-title.Font = Enum.Font.GothamBold
-title.TextSize = 16
-title.TextColor3 = Color3.fromRGB(255, 255, 255)
-title.TextXAlignment = Enum.TextXAlignment.Left
-title.Text = "AutoHop"
-
-local statusLabel = Instance.new("TextLabel")
-statusLabel.Parent = frame
-statusLabel.BackgroundTransparency = 1
-statusLabel.Position = UDim2.new(0, 14, 0, 54)
-statusLabel.Size = UDim2.new(1, -28, 0, 20)
-statusLabel.Font = Enum.Font.Gotham
-statusLabel.TextSize = 13
-statusLabel.TextColor3 = Color3.fromRGB(190, 190, 200)
-statusLabel.TextXAlignment = Enum.TextXAlignment.Left
-statusLabel.Text = "Status: Initializing..."
-
-local cooldownLabel = Instance.new("TextLabel")
-cooldownLabel.Parent = frame
-cooldownLabel.BackgroundTransparency = 1
-cooldownLabel.Position = UDim2.new(0, 14, 0, 76)
-cooldownLabel.Size = UDim2.new(1, -28, 0, 20)
-cooldownLabel.Font = Enum.Font.Gotham
-cooldownLabel.TextSize = 13
-cooldownLabel.TextColor3 = Color3.fromRGB(190, 190, 200)
-cooldownLabel.TextXAlignment = Enum.TextXAlignment.Left
-cooldownLabel.Text = "Cooldown: 0s"
-
-local targetLabel = Instance.new("TextLabel")
-targetLabel.Parent = frame
-targetLabel.BackgroundTransparency = 1
-targetLabel.Position = UDim2.new(0, 14, 0, 98)
-targetLabel.Size = UDim2.new(1, -28, 0, 38)
-targetLabel.Font = Enum.Font.Gotham
-targetLabel.TextSize = 13
-targetLabel.TextColor3 = Color3.fromRGB(220, 220, 230)
-targetLabel.TextXAlignment = Enum.TextXAlignment.Left
-targetLabel.TextYAlignment = Enum.TextYAlignment.Top
-targetLabel.TextWrapped = true
-targetLabel.Text = "Target: none"
-
-local listHeader = Instance.new("TextLabel")
-listHeader.Parent = frame
-listHeader.BackgroundTransparency = 1
-listHeader.Position = UDim2.new(0, 14, 0, 142)
-listHeader.Size = UDim2.new(1, -28, 0, 20)
-listHeader.Font = Enum.Font.GothamBold
-listHeader.TextSize = 13
-listHeader.TextColor3 = Color3.fromRGB(255, 255, 255)
-listHeader.TextXAlignment = Enum.TextXAlignment.Left
-listHeader.Text = "Servers"
-
-local listContainer = Instance.new("Frame")
-listContainer.Parent = frame
-listContainer.Position = UDim2.new(0, 12, 0, 168)
-listContainer.Size = UDim2.new(1, -24, 1, -180)
-listContainer.BackgroundColor3 = Color3.fromRGB(23, 23, 28)
-listContainer.BorderSizePixel = 0
-
-local listCorner = Instance.new("UICorner")
-listCorner.CornerRadius = UDim.new(0, 8)
-listCorner.Parent = listContainer
-
-local listStroke = Instance.new("UIStroke")
-listStroke.Color = Color3.fromRGB(40, 40, 50)
-listStroke.Thickness = 1
-listStroke.Parent = listContainer
-
-local scrolling = Instance.new("ScrollingFrame")
-scrolling.Parent = listContainer
-scrolling.BackgroundTransparency = 1
-scrolling.BorderSizePixel = 0
-scrolling.Position = UDim2.new(0, 8, 0, 8)
-scrolling.Size = UDim2.new(1, -16, 1, -16)
-scrolling.CanvasSize = UDim2.new(0, 0, 0, 0)
-scrolling.ScrollBarThickness = 4
-scrolling.AutomaticCanvasSize = Enum.AutomaticSize.None
-
-local layout = Instance.new("UIListLayout")
-layout.Parent = scrolling
-layout.Padding = UDim.new(0, 6)
-layout.SortOrder = Enum.SortOrder.LayoutOrder
-
-local function clearServerList()
-    for _, child in ipairs(scrolling:GetChildren()) do
-        if child:IsA("Frame") then
-            child:Destroy()
-        end
     end
 end
 
@@ -182,6 +45,34 @@ end
 
 local function isVicious(server)
     return tostring(server.type or "") == "Vicious"
+end
+
+local function getServerColor(server)
+    if isVicious(server) and server.gifted == true then
+        return "#f5ce0a"
+    end
+
+    if isVicious(server) then
+        return "#85C5FF"
+    end
+
+    local rarity = tostring(server.rarity or "")
+
+    if rarity == "Supreme" then
+        return "#7DEC66"
+    elseif rarity == "Legendary" then
+        return "#3AD5EA"
+    elseif rarity == "Epic" then
+        return "#BEC459"
+    elseif rarity == "Rare" then
+        return "#BBB9BC"
+    elseif rarity == "Gummy" then
+        return "#6E324E"
+    elseif rarity == "Festive" then
+        return "#6B273D"
+    end
+
+    return "#FFFFFF"
 end
 
 local function getRemainingSeconds(server)
@@ -436,12 +327,162 @@ local function sortServersForUi(servers)
     return copy
 end
 
+safeDestroyGui()
+
+local gui = Instance.new("ScreenGui")
+gui.Name = "BSS_UI"
+gui.ResetOnSpawn = false
+gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+gui.Parent = CoreGui
+
+local frame = Instance.new("Frame")
+frame.Parent = gui
+frame.Size = UDim2.new(0, 340, 0, 420)
+frame.Position = UDim2.new(0, 15, 0.5, -210)
+frame.BackgroundColor3 = Color3.fromRGB(18, 18, 22)
+frame.BorderSizePixel = 0
+
+local corner = Instance.new("UICorner")
+corner.CornerRadius = UDim.new(0, 10)
+corner.Parent = frame
+
+local stroke = Instance.new("UIStroke")
+stroke.Color = Color3.fromRGB(45, 45, 55)
+stroke.Thickness = 1
+stroke.Parent = frame
+
+local header = Instance.new("Frame")
+header.Parent = frame
+header.Size = UDim2.new(1, 0, 0, 44)
+header.BackgroundColor3 = Color3.fromRGB(24, 24, 30)
+header.BorderSizePixel = 0
+
+local headerCorner = Instance.new("UICorner")
+headerCorner.CornerRadius = UDim.new(0, 10)
+headerCorner.Parent = header
+
+local headerFix = Instance.new("Frame")
+headerFix.Parent = header
+headerFix.Position = UDim2.new(0, 0, 1, -10)
+headerFix.Size = UDim2.new(1, 0, 0, 10)
+headerFix.BackgroundColor3 = header.BackgroundColor3
+headerFix.BorderSizePixel = 0
+
+local title = Instance.new("TextLabel")
+title.Parent = header
+title.BackgroundTransparency = 1
+title.Position = UDim2.new(0, 14, 0, 0)
+title.Size = UDim2.new(1, -28, 1, 0)
+title.Font = Enum.Font.GothamBold
+title.TextSize = 16
+title.TextColor3 = Color3.fromRGB(255, 255, 255)
+title.TextXAlignment = Enum.TextXAlignment.Left
+title.Text = "AutoHop"
+
+local statusLabel = Instance.new("TextLabel")
+statusLabel.Parent = frame
+statusLabel.BackgroundTransparency = 1
+statusLabel.Position = UDim2.new(0, 14, 0, 54)
+statusLabel.Size = UDim2.new(1, -28, 0, 20)
+statusLabel.Font = Enum.Font.Gotham
+statusLabel.TextSize = 13
+statusLabel.TextColor3 = Color3.fromRGB(190, 190, 200)
+statusLabel.TextXAlignment = Enum.TextXAlignment.Left
+statusLabel.Text = "Status: Initializing..."
+
+local cooldownLabel = Instance.new("TextLabel")
+cooldownLabel.Parent = frame
+cooldownLabel.BackgroundTransparency = 1
+cooldownLabel.Position = UDim2.new(0, 14, 0, 76)
+cooldownLabel.Size = UDim2.new(1, -28, 0, 20)
+cooldownLabel.Font = Enum.Font.Gotham
+cooldownLabel.TextSize = 13
+cooldownLabel.TextColor3 = Color3.fromRGB(190, 190, 200)
+cooldownLabel.TextXAlignment = Enum.TextXAlignment.Left
+cooldownLabel.Text = "Cooldown: 0s"
+
+local targetLabel = Instance.new("TextLabel")
+targetLabel.Parent = frame
+targetLabel.BackgroundTransparency = 1
+targetLabel.Position = UDim2.new(0, 14, 0, 98)
+targetLabel.Size = UDim2.new(1, -28, 0, 38)
+targetLabel.Font = Enum.Font.Gotham
+targetLabel.TextSize = 13
+targetLabel.TextColor3 = Color3.fromRGB(220, 220, 230)
+targetLabel.TextXAlignment = Enum.TextXAlignment.Left
+targetLabel.TextYAlignment = Enum.TextYAlignment.Top
+targetLabel.TextWrapped = true
+targetLabel.RichText = true
+targetLabel.Text = "Target: none"
+
+local listHeader = Instance.new("TextLabel")
+listHeader.Parent = frame
+listHeader.BackgroundTransparency = 1
+listHeader.Position = UDim2.new(0, 14, 0, 142)
+listHeader.Size = UDim2.new(1, -28, 0, 20)
+listHeader.Font = Enum.Font.GothamBold
+listHeader.TextSize = 13
+listHeader.TextColor3 = Color3.fromRGB(255, 255, 255)
+listHeader.TextXAlignment = Enum.TextXAlignment.Left
+listHeader.Text = "Servers"
+
+local listContainer = Instance.new("Frame")
+listContainer.Parent = frame
+listContainer.Position = UDim2.new(0, 12, 0, 168)
+listContainer.Size = UDim2.new(1, -24, 1, -180)
+listContainer.BackgroundColor3 = Color3.fromRGB(23, 23, 28)
+listContainer.BorderSizePixel = 0
+
+local listCorner = Instance.new("UICorner")
+listCorner.CornerRadius = UDim.new(0, 8)
+listCorner.Parent = listContainer
+
+local listStroke = Instance.new("UIStroke")
+listStroke.Color = Color3.fromRGB(40, 40, 50)
+listStroke.Thickness = 1
+listStroke.Parent = listContainer
+
+local scrolling = Instance.new("ScrollingFrame")
+scrolling.Parent = listContainer
+scrolling.BackgroundTransparency = 1
+scrolling.BorderSizePixel = 0
+scrolling.Position = UDim2.new(0, 8, 0, 8)
+scrolling.Size = UDim2.new(1, -16, 1, -16)
+scrolling.CanvasSize = UDim2.new(0, 0, 0, 0)
+scrolling.ScrollBarThickness = 4
+scrolling.AutomaticCanvasSize = Enum.AutomaticSize.None
+
+local layout = Instance.new("UIListLayout")
+layout.Parent = scrolling
+layout.Padding = UDim.new(0, 6)
+layout.SortOrder = Enum.SortOrder.LayoutOrder
+
+local function clearServerList()
+    for _, child in ipairs(scrolling:GetChildren()) do
+        if child:IsA("Frame") then
+            child:Destroy()
+        end
+    end
+end
+
 local function formatServerLine(server)
     local serverType = tostring(server.type or "?")
-    local rarity = tostring(server.rarity or "?")
+    local rarity = tostring(server.rarity or "")
     local players = tonumber(server.playerCount) or 0
     local priority = getPriority(server)
     local remaining = getRemainingSeconds(server)
+    local color = getServerColor(server)
+
+    local nameText
+    if isVicious(server) then
+        if server.gifted == true then
+            nameText = string.format('<font color="%s">%s Gifted</font>', color, serverType)
+        else
+            nameText = string.format('<font color="%s">%s</font>', color, serverType)
+        end
+    else
+        nameText = string.format('<font color="%s">%s %s</font>', color, serverType, rarity)
+    end
 
     local extra = ""
     if isSprout(server) then
@@ -453,7 +494,7 @@ local function formatServerLine(server)
         end
     end
 
-    return string.format("%s %s | %dP | Pr:%d%s", serverType, rarity, players, priority, extra)
+    return string.format("%s | %dP | Pr:%d%s", nameText, players, priority, extra)
 end
 
 local function updateServerList(servers, best)
@@ -464,7 +505,7 @@ local function updateServerList(servers, best)
 
     for _, server in ipairs(sorted) do
         if getPriority(server) > 0 then
-            shown += 1
+            shown = shown + 1
             if shown > 12 then
                 break
             end
@@ -490,6 +531,7 @@ local function updateServerList(servers, best)
             itemText.TextSize = 12
             itemText.TextColor3 = Color3.fromRGB(235, 235, 240)
             itemText.TextXAlignment = Enum.TextXAlignment.Left
+            itemText.RichText = true
             itemText.Text = formatServerLine(server)
         end
     end
@@ -538,7 +580,20 @@ local function updateTopInfo(best, force, joinedAgo, cooldown)
     end
 
     if best then
+        local color = getServerColor(best)
         local remaining = getRemainingSeconds(best)
+
+        local nameText
+        if isVicious(best) then
+            if best.gifted == true then
+                nameText = string.format('<font color="%s">%s Gifted</font>', color, tostring(best.type or "?"))
+            else
+                nameText = string.format('<font color="%s">%s</font>', color, tostring(best.type or "?"))
+            end
+        else
+            nameText = string.format('<font color="%s">%s %s</font>', color, tostring(best.type or "?"), tostring(best.rarity or "?"))
+        end
+
         local extra = ""
 
         if isSprout(best) then
@@ -551,9 +606,8 @@ local function updateTopInfo(best, force, joinedAgo, cooldown)
         end
 
         targetLabel.Text = string.format(
-            "Target: %s %s | Field: %s | Players: %s | Priority: %d%s",
-            tostring(best.type or "?"),
-            tostring(best.rarity or "?"),
+            "Target: %s | Field: %s | Players: %s | Priority: %d%s",
+            nameText,
             tostring(best.field or "?"),
             tostring(best.playerCount or "?"),
             getPriority(best),
