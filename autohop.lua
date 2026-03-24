@@ -16,7 +16,7 @@ end
 
 local placeId = game.PlaceId
 
-local TELEPORT_COOLDOWN = 40
+local TELEPORT_COOLDOWN = 55
 local CHECK_DELAY = 1
 local MIN_SPROUT_SECONDS = 30
 local MAX_PLAYERS = 4
