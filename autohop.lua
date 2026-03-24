@@ -16,7 +16,7 @@ end
 
 local placeId = game.PlaceId
 
-local TELEPORT_COOLDOWN = 55
+local TELEPORT_COOLDOWN = 40
 local CHECK_DELAY = 1
 local MIN_SPROUT_SECONDS = 30
 local MAX_PLAYERS = 4
@@ -30,9 +30,11 @@ getgenv().BSS_CURRENT_SERVER_TYPE = getgenv().BSS_CURRENT_SERVER_TYPE or nil
 getgenv().BSS_CURRENT_SERVER_RARITY = getgenv().BSS_CURRENT_SERVER_RARITY or nil
 getgenv().BSS_NEXT_TELEPORT_COOLDOWN = getgenv().BSS_NEXT_TELEPORT_COOLDOWN or TELEPORT_COOLDOWN
 getgenv().BSS_UI_COLLAPSED = getgenv().BSS_UI_COLLAPSED or false
+getgenv().BSS_HIDDEN_JOB_IDS = getgenv().BSS_HIDDEN_JOB_IDS or {}
 
 local VISITED = getgenv().BSS_VISITED_JOB_IDS
 local RECENT = getgenv().BSS_RECENT_JOB_IDS
+local HIDDEN = getgenv().BSS_HIDDEN_JOB_IDS
 
 local function safeDestroyGui()
     local old = CoreGui:FindFirstChild("BSS_UI")
@@ -173,11 +175,22 @@ local function pushRecent(jobId)
     end
 end
 
+local function hideJobId(jobId)
+    if jobId and jobId ~= "" then
+        HIDDEN[jobId] = true
+    end
+end
+
+local function isHidden(jobId)
+    return jobId and HIDDEN[jobId] == true
+end
+
 local function markCurrentServer()
     local currentJobId = game.JobId
     if currentJobId and currentJobId ~= "" then
         VISITED[currentJobId] = true
         pushRecent(currentJobId)
+        hideJobId(currentJobId)
     end
 end
 
@@ -200,6 +213,10 @@ local function isValidServer(server)
     end
 
     if isInRecent(server.jobId) then
+        return false
+    end
+
+    if isHidden(server.jobId) then
         return false
     end
 
@@ -314,7 +331,7 @@ local function sortServersForUi(servers)
     local copy = {}
 
     for _, server in ipairs(servers) do
-        if getPriority(server) > 0 then
+        if getPriority(server) > 0 and not isHidden(server.jobId) and server.jobId ~= game.JobId then
             table.insert(copy, server)
         end
     end
@@ -533,6 +550,7 @@ local function formatServerLine(server)
     local rarity = tostring(server.rarity or "")
     local players = tonumber(server.playerCount) or 0
     local remaining = getRemainingSeconds(server)
+    local field = tostring(server.field or "?")
     local color = getServerColor(server)
 
     local nameText
@@ -556,7 +574,7 @@ local function formatServerLine(server)
         end
     end
 
-    return string.format("%s | %dP%s", nameText, players, extra)
+    return string.format("%s | %dP%s | %s", nameText, players, extra, field)
 end
 
 local function updateServerList(servers, best)
@@ -588,13 +606,33 @@ local function updateServerList(servers, best)
         itemText.Parent = item
         itemText.BackgroundTransparency = 1
         itemText.Position = UDim2.new(0, 10, 0, 0)
-        itemText.Size = UDim2.new(1, -20, 1, 0)
+        itemText.Size = UDim2.new(1, -54, 1, 0)
         itemText.Font = Enum.Font.Gotham
         itemText.TextSize = 12
         itemText.TextColor3 = Color3.fromRGB(235, 235, 240)
         itemText.TextXAlignment = Enum.TextXAlignment.Left
         itemText.RichText = true
         itemText.Text = formatServerLine(server)
+
+        local deleteButton = Instance.new("TextButton")
+        deleteButton.Parent = item
+        deleteButton.Size = UDim2.new(0, 28, 0, 24)
+        deleteButton.Position = UDim2.new(1, -34, 0.5, -12)
+        deleteButton.BackgroundColor3 = Color3.fromRGB(38, 38, 46)
+        deleteButton.BorderSizePixel = 0
+        deleteButton.Font = Enum.Font.GothamBold
+        deleteButton.TextSize = 13
+        deleteButton.TextColor3 = Color3.fromRGB(220, 220, 225)
+        deleteButton.Text = "🗑"
+
+        local deleteCorner = Instance.new("UICorner")
+        deleteCorner.CornerRadius = UDim.new(0, 6)
+        deleteCorner.Parent = deleteButton
+
+        deleteButton.MouseButton1Click:Connect(function()
+            hideJobId(server.jobId)
+            updateServerList(servers, best)
+        end)
     end
 
     if shown == 0 then
