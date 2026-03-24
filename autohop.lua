@@ -2,7 +2,7 @@ local HttpService = game:GetService("HttpService")
 local TeleportService = game:GetService("TeleportService")
 local Players = game:GetService("Players")
 local CoreGui = game:GetService("CoreGui")
-local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
 
 local LocalPlayer = Players.LocalPlayer
 
@@ -21,162 +21,21 @@ local CHECK_DELAY = 1
 local MIN_SPROUT_SECONDS = 30
 local MAX_PLAYERS = 4
 local RECENT_LIMIT = 5
-local SPROUT_WAIT_TIME = 25
-local VICIOUS_WAIT_TIME = 0
-local JOIN_VERIFY_DELAY = 5
 
 getgenv().BSS_VISITED_JOB_IDS = getgenv().BSS_VISITED_JOB_IDS or {}
 getgenv().BSS_RECENT_JOB_IDS = getgenv().BSS_RECENT_JOB_IDS or {}
 getgenv().BSS_SERVER_JOIN_TIME = getgenv().BSS_SERVER_JOIN_TIME or tick()
-getgenv().BSS_WAITING_FOR_SPROUT = getgenv().BSS_WAITING_FOR_SPROUT or false
-getgenv().BSS_WAITING_FOR_VICIOUS = getgenv().BSS_WAITING_FOR_VICIOUS or false
-getgenv().BSS_SPROUT_EXISTS = getgenv().BSS_SPROUT_EXISTS or false
-getgenv().BSS_VICIOUS_EXISTS = getgenv().BSS_VICIOUS_EXISTS or false
-getgenv().BSS_WAIT_START_TIME = getgenv().BSS_WAIT_START_TIME or 0
-getgenv().BSS_TARGET_CONFIRMED = getgenv().BSS_TARGET_CONFIRMED or false
 
 getgenv().BSS_CURRENT_SERVER_TYPE = getgenv().BSS_CURRENT_SERVER_TYPE or nil
 getgenv().BSS_CURRENT_SERVER_RARITY = getgenv().BSS_CURRENT_SERVER_RARITY or nil
 getgenv().BSS_NEXT_TELEPORT_COOLDOWN = getgenv().BSS_NEXT_TELEPORT_COOLDOWN or TELEPORT_COOLDOWN
+getgenv().BSS_UI_COLLAPSED = getgenv().BSS_UI_COLLAPSED or false
+getgenv().BSS_HIDDEN_JOB_IDS = getgenv().BSS_HIDDEN_JOB_IDS or {}
 
 local VISITED = getgenv().BSS_VISITED_JOB_IDS
 local RECENT = getgenv().BSS_RECENT_JOB_IDS
+local HIDDEN = getgenv().BSS_HIDDEN_JOB_IDS
 
--- ========== ЛОКАЛЬНОЕ ОТСЛЕЖИВАНИЕ ==========
-local function checkLocalSprout()
-    local sproutFolder = workspace:FindFirstChild("Sprouts")
-    if sproutFolder then
-        local sprout = sproutFolder:FindFirstChild("Sprout")
-        return sprout ~= nil
-    end
-    return false
-end
-
-local function checkLocalVicious()
-    local monstersFolder = workspace:FindFirstChild("Monsters")
-    if not monstersFolder then
-        return false
-    end
-
-    for _, obj in ipairs(monstersFolder:GetChildren()) do
-        if string.find(string.lower(obj.Name), "vicious bee", 1, true) then
-            return true
-        end
-    end
-
-    return false
-end
-
-local function startWaitingForSprout()
-    getgenv().BSS_WAITING_FOR_SPROUT = true
-    getgenv().BSS_WAIT_START_TIME = tick()
-    print("[LOCAL] Sprout исчез, ожидание " .. SPROUT_WAIT_TIME .. " сек перед телепортом")
-end
-
-local function startWaitingForVicious()
-    getgenv().BSS_WAITING_FOR_VICIOUS = true
-    getgenv().BSS_WAIT_START_TIME = tick()
-    print("[LOCAL] Vicious Bee исчез, немедленный переход")
-end
-
-local function shouldWaitForLocalDespawn()
-    local joinedAgo = tick() - getgenv().BSS_SERVER_JOIN_TIME
-
-    if getgenv().BSS_CURRENT_SERVER_TYPE == "Sprout" then
-        local sproutExists = checkLocalSprout()
-
-        if sproutExists then
-            getgenv().BSS_SPROUT_EXISTS = true
-            getgenv().BSS_TARGET_CONFIRMED = true
-            getgenv().BSS_WAITING_FOR_SPROUT = false
-        else
-            if not getgenv().BSS_TARGET_CONFIRMED and joinedAgo >= JOIN_VERIFY_DELAY then
-                print("[LOCAL] Sprout not found after join")
-                getgenv().BSS_NEXT_TELEPORT_COOLDOWN = 0
-                getgenv().BSS_SERVER_JOIN_TIME = 0
-                return false
-            end
-
-            if getgenv().BSS_SPROUT_EXISTS then
-                getgenv().BSS_SPROUT_EXISTS = false
-                if not getgenv().BSS_WAITING_FOR_SPROUT then
-                    startWaitingForSprout()
-                end
-            end
-        end
-
-        if getgenv().BSS_WAITING_FOR_SPROUT then
-            local elapsed = tick() - getgenv().BSS_WAIT_START_TIME
-            if elapsed >= SPROUT_WAIT_TIME then
-                getgenv().BSS_WAITING_FOR_SPROUT = false
-                return false
-            end
-            return true
-        end
-    end
-
-    if getgenv().BSS_CURRENT_SERVER_TYPE == "Vicious" then
-        local viciousExists = checkLocalVicious()
-
-        if viciousExists then
-            getgenv().BSS_VICIOUS_EXISTS = true
-            getgenv().BSS_TARGET_CONFIRMED = true
-            getgenv().BSS_WAITING_FOR_VICIOUS = false
-        else
-            if not getgenv().BSS_TARGET_CONFIRMED and joinedAgo >= JOIN_VERIFY_DELAY then
-                print("[LOCAL] Vicious not found after join")
-                getgenv().BSS_NEXT_TELEPORT_COOLDOWN = 0
-                getgenv().BSS_SERVER_JOIN_TIME = 0
-                return false
-            end
-
-            if getgenv().BSS_VICIOUS_EXISTS then
-                getgenv().BSS_VICIOUS_EXISTS = false
-                if not getgenv().BSS_WAITING_FOR_VICIOUS then
-                    startWaitingForVicious()
-                end
-            end
-        end
-
-        if getgenv().BSS_WAITING_FOR_VICIOUS then
-            getgenv().BSS_WAITING_FOR_VICIOUS = false
-            return false
-        end
-    end
-
-    return false
-end
-
-local function updateLocalStatus()
-    if getgenv().BSS_CURRENT_SERVER_TYPE == "Sprout" then
-        if not getgenv().BSS_TARGET_CONFIRMED then
-            local joinedAgo = tick() - getgenv().BSS_SERVER_JOIN_TIME
-            local left = math.max(0, JOIN_VERIFY_DELAY - joinedAgo)
-            return string.format("Checking sprout: %ds", math.ceil(left))
-        elseif getgenv().BSS_WAITING_FOR_SPROUT then
-            local remaining = math.max(0, SPROUT_WAIT_TIME - (tick() - getgenv().BSS_WAIT_START_TIME))
-            return string.format("Waiting after sprout: %ds", math.ceil(remaining))
-        elseif getgenv().BSS_SPROUT_EXISTS then
-            return "Sprout active on this server"
-        else
-            return "Sprout missing"
-        end
-    elseif getgenv().BSS_CURRENT_SERVER_TYPE == "Vicious" then
-        if not getgenv().BSS_TARGET_CONFIRMED then
-            local joinedAgo = tick() - getgenv().BSS_SERVER_JOIN_TIME
-            local left = math.max(0, JOIN_VERIFY_DELAY - joinedAgo)
-            return string.format("Checking vicious: %ds", math.ceil(left))
-        elseif getgenv().BSS_VICIOUS_EXISTS then
-            return "Vicious active on this server"
-        else
-            return "Vicious missing / despawned"
-        end
-    end
-
-    return ""
-end
-
--- ========== ОСТАЛЬНАЯ ЛОГИКА (НЕ ИЗМЕНЯЕТСЯ) ==========
 local function safeDestroyGui()
     local old = CoreGui:FindFirstChild("BSS_UI")
     if old then
@@ -316,11 +175,22 @@ local function pushRecent(jobId)
     end
 end
 
+local function hideJobId(jobId)
+    if jobId and jobId ~= "" then
+        HIDDEN[jobId] = true
+    end
+end
+
+local function isHidden(jobId)
+    return jobId and HIDDEN[jobId] == true
+end
+
 local function markCurrentServer()
     local currentJobId = game.JobId
     if currentJobId and currentJobId ~= "" then
         VISITED[currentJobId] = true
         pushRecent(currentJobId)
+        hideJobId(currentJobId)
     end
 end
 
@@ -343,6 +213,10 @@ local function isValidServer(server)
     end
 
     if isInRecent(server.jobId) then
+        return false
+    end
+
+    if isHidden(server.jobId) then
         return false
     end
 
@@ -457,22 +331,18 @@ local function sortServersForUi(servers)
     local copy = {}
 
     for _, server in ipairs(servers) do
-        table.insert(copy, server)
+        if getPriority(server) > 0 and not isHidden(server.jobId) and server.jobId ~= game.JobId then
+            table.insert(copy, server)
+        end
     end
 
     table.sort(copy, function(a, b)
-        if isBetterServer(a, b) then
-            return true
-        elseif isBetterServer(b, a) then
-            return false
-        end
-        return false
+        return isBetterServer(a, b)
     end)
 
     return copy
 end
 
--- ========== GUI ==========
 safeDestroyGui()
 
 local gui = Instance.new("ScreenGui")
@@ -483,8 +353,8 @@ gui.Parent = CoreGui
 
 local frame = Instance.new("Frame")
 frame.Parent = gui
-frame.Size = UDim2.new(0, 340, 0, 460)
-frame.Position = UDim2.new(0, 15, 0.5, -230)
+frame.Size = UDim2.new(0, 340, 0, getgenv().BSS_UI_COLLAPSED and 44 or 420)
+frame.Position = UDim2.new(1, -355, 0.5, getgenv().BSS_UI_COLLAPSED and -22 or -210)
 frame.BackgroundColor3 = Color3.fromRGB(18, 18, 22)
 frame.BorderSizePixel = 0
 
@@ -518,12 +388,27 @@ local title = Instance.new("TextLabel")
 title.Parent = header
 title.BackgroundTransparency = 1
 title.Position = UDim2.new(0, 14, 0, 0)
-title.Size = UDim2.new(1, -28, 1, 0)
+title.Size = UDim2.new(1, -70, 1, 0)
 title.Font = Enum.Font.GothamBold
 title.TextSize = 16
 title.TextColor3 = Color3.fromRGB(255, 255, 255)
 title.TextXAlignment = Enum.TextXAlignment.Left
-title.Text = "AutoHop + Local Tracker"
+title.Text = "AutoHop"
+
+local collapseButton = Instance.new("TextButton")
+collapseButton.Parent = header
+collapseButton.Size = UDim2.new(0, 32, 0, 24)
+collapseButton.Position = UDim2.new(1, -40, 0.5, -12)
+collapseButton.BackgroundColor3 = Color3.fromRGB(34, 34, 42)
+collapseButton.BorderSizePixel = 0
+collapseButton.Font = Enum.Font.GothamBold
+collapseButton.TextSize = 16
+collapseButton.TextColor3 = Color3.fromRGB(230, 230, 235)
+collapseButton.Text = getgenv().BSS_UI_COLLAPSED and "+" or "—"
+
+local collapseCorner = Instance.new("UICorner")
+collapseCorner.CornerRadius = UDim.new(0, 6)
+collapseCorner.Parent = collapseButton
 
 local statusLabel = Instance.new("TextLabel")
 statusLabel.Parent = frame
@@ -547,21 +432,10 @@ cooldownLabel.TextColor3 = Color3.fromRGB(190, 190, 200)
 cooldownLabel.TextXAlignment = Enum.TextXAlignment.Left
 cooldownLabel.Text = "Cooldown: 0s"
 
-local localStatusLabel = Instance.new("TextLabel")
-localStatusLabel.Parent = frame
-localStatusLabel.BackgroundTransparency = 1
-localStatusLabel.Position = UDim2.new(0, 14, 0, 98)
-localStatusLabel.Size = UDim2.new(1, -28, 0, 20)
-localStatusLabel.Font = Enum.Font.Gotham
-localStatusLabel.TextSize = 12
-localStatusLabel.TextColor3 = Color3.fromRGB(150, 200, 150)
-localStatusLabel.TextXAlignment = Enum.TextXAlignment.Left
-localStatusLabel.Text = "Local: --"
-
 local targetLabel = Instance.new("TextLabel")
 targetLabel.Parent = frame
 targetLabel.BackgroundTransparency = 1
-targetLabel.Position = UDim2.new(0, 14, 0, 120)
+targetLabel.Position = UDim2.new(0, 14, 0, 98)
 targetLabel.Size = UDim2.new(1, -28, 0, 38)
 targetLabel.Font = Enum.Font.Gotham
 targetLabel.TextSize = 13
@@ -575,7 +449,7 @@ targetLabel.Text = "Target: none"
 local listHeader = Instance.new("TextLabel")
 listHeader.Parent = frame
 listHeader.BackgroundTransparency = 1
-listHeader.Position = UDim2.new(0, 14, 0, 164)
+listHeader.Position = UDim2.new(0, 14, 0, 142)
 listHeader.Size = UDim2.new(1, -28, 0, 20)
 listHeader.Font = Enum.Font.GothamBold
 listHeader.TextSize = 13
@@ -585,8 +459,8 @@ listHeader.Text = "Servers"
 
 local listContainer = Instance.new("Frame")
 listContainer.Parent = frame
-listContainer.Position = UDim2.new(0, 12, 0, 190)
-listContainer.Size = UDim2.new(1, -24, 1, -202)
+listContainer.Position = UDim2.new(0, 12, 0, 168)
+listContainer.Size = UDim2.new(1, -24, 1, -180)
 listContainer.BackgroundColor3 = Color3.fromRGB(23, 23, 28)
 listContainer.BorderSizePixel = 0
 
@@ -614,6 +488,55 @@ layout.Parent = scrolling
 layout.Padding = UDim.new(0, 6)
 layout.SortOrder = Enum.SortOrder.LayoutOrder
 
+local function setCollapsed(collapsed)
+    getgenv().BSS_UI_COLLAPSED = collapsed
+    collapseButton.Text = collapsed and "+" or "—"
+
+    statusLabel.Visible = not collapsed
+    cooldownLabel.Visible = not collapsed
+    targetLabel.Visible = not collapsed
+    listHeader.Visible = not collapsed
+    listContainer.Visible = not collapsed
+
+    frame.Size = UDim2.new(0, 340, 0, collapsed and 44 or 420)
+end
+
+collapseButton.MouseButton1Click:Connect(function()
+    setCollapsed(not getgenv().BSS_UI_COLLAPSED)
+end)
+
+setCollapsed(getgenv().BSS_UI_COLLAPSED)
+
+local dragging = false
+local dragStart
+local startPos
+
+header.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then
+        dragging = true
+        dragStart = input.Position
+        startPos = frame.Position
+
+        input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then
+                dragging = false
+            end
+        end)
+    end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+    if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+        local delta = input.Position - dragStart
+        frame.Position = UDim2.new(
+            startPos.X.Scale,
+            startPos.X.Offset + delta.X,
+            startPos.Y.Scale,
+            startPos.Y.Offset + delta.Y
+        )
+    end
+end)
+
 local function clearServerList()
     for _, child in ipairs(scrolling:GetChildren()) do
         if child:IsA("Frame") then
@@ -626,8 +549,8 @@ local function formatServerLine(server)
     local serverType = tostring(server.type or "?")
     local rarity = tostring(server.rarity or "")
     local players = tonumber(server.playerCount) or 0
-    local priority = getPriority(server)
     local remaining = getRemainingSeconds(server)
+    local field = tostring(server.field or "?")
     local color = getServerColor(server)
 
     local nameText
@@ -651,7 +574,7 @@ local function formatServerLine(server)
         end
     end
 
-    return string.format("%s | %dP | Pr:%d%s", nameText, players, priority, extra)
+    return string.format("%s | %dP%s | %s", nameText, players, extra, field)
 end
 
 local function updateServerList(servers, best)
@@ -661,36 +584,55 @@ local function updateServerList(servers, best)
     local shown = 0
 
     for _, server in ipairs(sorted) do
-        if getPriority(server) > 0 then
-            shown = shown + 1
-            if shown > 12 then
-                break
-            end
-
-            local item = Instance.new("Frame")
-            item.Parent = scrolling
-            item.Size = UDim2.new(1, 0, 0, 34)
-            item.BackgroundColor3 = (best and server.jobId == best.jobId)
-                and Color3.fromRGB(36, 58, 44)
-                or Color3.fromRGB(28, 28, 34)
-            item.BorderSizePixel = 0
-
-            local itemCorner = Instance.new("UICorner")
-            itemCorner.CornerRadius = UDim.new(0, 6)
-            itemCorner.Parent = item
-
-            local itemText = Instance.new("TextLabel")
-            itemText.Parent = item
-            itemText.BackgroundTransparency = 1
-            itemText.Position = UDim2.new(0, 10, 0, 0)
-            itemText.Size = UDim2.new(1, -20, 1, 0)
-            itemText.Font = Enum.Font.Gotham
-            itemText.TextSize = 12
-            itemText.TextColor3 = Color3.fromRGB(235, 235, 240)
-            itemText.TextXAlignment = Enum.TextXAlignment.Left
-            itemText.RichText = true
-            itemText.Text = formatServerLine(server)
+        shown = shown + 1
+        if shown > 12 then
+            break
         end
+
+        local item = Instance.new("Frame")
+        item.Parent = scrolling
+        item.Size = UDim2.new(1, 0, 0, 34)
+        item.BackgroundColor3 = (best and server.jobId == best.jobId)
+            and Color3.fromRGB(36, 58, 44)
+            or Color3.fromRGB(28, 28, 34)
+        item.BorderSizePixel = 0
+        item.LayoutOrder = shown
+
+        local itemCorner = Instance.new("UICorner")
+        itemCorner.CornerRadius = UDim.new(0, 6)
+        itemCorner.Parent = item
+
+        local itemText = Instance.new("TextLabel")
+        itemText.Parent = item
+        itemText.BackgroundTransparency = 1
+        itemText.Position = UDim2.new(0, 10, 0, 0)
+        itemText.Size = UDim2.new(1, -54, 1, 0)
+        itemText.Font = Enum.Font.Gotham
+        itemText.TextSize = 12
+        itemText.TextColor3 = Color3.fromRGB(235, 235, 240)
+        itemText.TextXAlignment = Enum.TextXAlignment.Left
+        itemText.RichText = true
+        itemText.Text = formatServerLine(server)
+
+        local deleteButton = Instance.new("TextButton")
+        deleteButton.Parent = item
+        deleteButton.Size = UDim2.new(0, 28, 0, 24)
+        deleteButton.Position = UDim2.new(1, -34, 0.5, -12)
+        deleteButton.BackgroundColor3 = Color3.fromRGB(38, 38, 46)
+        deleteButton.BorderSizePixel = 0
+        deleteButton.Font = Enum.Font.GothamBold
+        deleteButton.TextSize = 13
+        deleteButton.TextColor3 = Color3.fromRGB(220, 220, 225)
+        deleteButton.Text = "🗑"
+
+        local deleteCorner = Instance.new("UICorner")
+        deleteCorner.CornerRadius = UDim.new(0, 6)
+        deleteCorner.Parent = deleteButton
+
+        deleteButton.MouseButton1Click:Connect(function()
+            hideJobId(server.jobId)
+            updateServerList(servers, best)
+        end)
     end
 
     if shown == 0 then
@@ -722,7 +664,6 @@ end
 
 local function updateTopInfo(best, force, joinedAgo, cooldown)
     local remainingCooldown = math.max(0, math.ceil(cooldown - joinedAgo))
-    local localStatus = updateLocalStatus()
 
     if force and best then
         statusLabel.Text = "Status: Force teleport"
@@ -736,8 +677,6 @@ local function updateTopInfo(best, force, joinedAgo, cooldown)
             cooldownLabel.Text = "Cooldown: 0s"
         end
     end
-    
-    localStatusLabel.Text = "Local: " .. localStatus
 
     if best then
         local color = getServerColor(best)
@@ -766,11 +705,10 @@ local function updateTopInfo(best, force, joinedAgo, cooldown)
         end
 
         targetLabel.Text = string.format(
-            "Target: %s | Field: %s | Players: %s | Priority: %d%s",
+            "Target: %s | Field: %s | Players: %s%s",
             nameText,
             tostring(best.field or "?"),
             tostring(best.playerCount or "?"),
-            getPriority(best),
             extra
         )
     else
@@ -778,18 +716,10 @@ local function updateTopInfo(best, force, joinedAgo, cooldown)
     end
 end
 
--- ========== ОСНОВНОЙ ЦИКЛ ==========
 markCurrentServer()
 
 while true do
     task.wait(CHECK_DELAY)
-    
-    -- Проверяем, нужно ли ждать локальный деспаун
-    if shouldWaitForLocalDespawn() then
-        local localStatus = updateLocalStatus()
-        print("[LOCAL WAIT]", localStatus)
-        continue
-    end
 
     local servers = fetchValidated()
     local best = pickBestServer(servers)
@@ -828,13 +758,6 @@ while true do
         getgenv().BSS_CURRENT_SERVER_RARITY = best.rarity
         getgenv().BSS_NEXT_TELEPORT_COOLDOWN = getCooldownForServer(best)
         getgenv().BSS_SERVER_JOIN_TIME = tick()
-        
-        -- Сбрасываем локальные флаги при телепорте
-        getgenv().BSS_SPROUT_EXISTS = false
-        getgenv().BSS_VICIOUS_EXISTS = false
-        getgenv().BSS_WAITING_FOR_SPROUT = false
-        getgenv().BSS_WAITING_FOR_VICIOUS = false
-        getgenv().BSS_TARGET_CONFIRMED = false
 
         TeleportService:TeleportToPlaceInstance(placeId, best.jobId, LocalPlayer)
         task.wait(3)
