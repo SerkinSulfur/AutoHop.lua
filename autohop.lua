@@ -132,9 +132,23 @@ local function getCooldownForServer(server)
     return 50
 end
 
+local function hasKnownCurrentServer()
+    local currentType = getgenv().BSS_CURRENT_SERVER_TYPE
+    if currentType == nil then
+        return false
+    end
+
+    local normalized = tostring(currentType):lower():gsub("^%s+", ""):gsub("%s+$", "")
+    return normalized ~= "" and normalized ~= "none" and normalized ~= "unknown"
+end
+
 local function shouldForceTeleport(best)
     if not best then
         return false
+    end
+
+    if not hasKnownCurrentServer() then
+        return true
     end
 
     local currentType = getgenv().BSS_CURRENT_SERVER_TYPE
@@ -802,7 +816,13 @@ while true do
     updateTopInfo(best, force, joinedAgo, dynamicCooldown)
     updateServerList(servers, best)
 
-    if not force and joinedAgo < dynamicCooldown then
+    local hasCurrentServer = hasKnownCurrentServer()
+
+    if not hasCurrentServer and best then
+        force = true
+    end
+
+    if hasCurrentServer and not force and joinedAgo < dynamicCooldown then
         print("[JOIN COOLDOWN]", math.ceil(dynamicCooldown - joinedAgo), "sec left")
         continue
     end
