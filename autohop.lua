@@ -101,18 +101,18 @@ local function getPriority(server)
         return 100
     elseif isSprout(server) and rarity == "Legendary" then
         return 90
-    elseif isSprout(server) and rarity == "Festive" then
-        return 85
     elseif isVicious(server) and server.gifted == true then
         return 80
-    elseif isSprout(server) and rarity == "Gummy" then
+    elseif isSprout(server) and rarity == "Festive" then
         return 70
-    elseif isSprout(server) and rarity == "Epic" then
+    elseif isSprout(server) and rarity == "Gummy" then
         return 60
-    elseif isVicious(server) then
+    elseif isSprout(server) and rarity == "Epic" then
         return 50
     elseif isSprout(server) and rarity == "Rare" then
         return 40
+    elseif isVicious(server) then
+        return 30
     end
 
     return 0
