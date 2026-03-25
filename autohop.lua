@@ -18,9 +18,10 @@ local placeId = game.PlaceId
 
 local TELEPORT_COOLDOWN = 55
 local CHECK_DELAY = 1
-local MIN_SPROUT_SECONDS = 30
+local MIN_SPROUT_SECONDS = 40
 local MAX_PLAYERS = 4
 local RECENT_LIMIT = 5
+local VISITED_LIMIT = 100
 
 getgenv().BSS_VISITED_JOB_IDS = getgenv().BSS_VISITED_JOB_IDS or {}
 getgenv().BSS_RECENT_JOB_IDS = getgenv().BSS_RECENT_JOB_IDS or {}
@@ -30,11 +31,11 @@ getgenv().BSS_CURRENT_SERVER_TYPE = getgenv().BSS_CURRENT_SERVER_TYPE or nil
 getgenv().BSS_CURRENT_SERVER_RARITY = getgenv().BSS_CURRENT_SERVER_RARITY or nil
 getgenv().BSS_NEXT_TELEPORT_COOLDOWN = getgenv().BSS_NEXT_TELEPORT_COOLDOWN or TELEPORT_COOLDOWN
 getgenv().BSS_UI_COLLAPSED = getgenv().BSS_UI_COLLAPSED or false
-getgenv().BSS_HIDDEN_JOB_IDS = getgenv().BSS_HIDDEN_JOB_IDS or {}
+getgenv().BSS_CURRENT_SERVER_JOB_ID = getgenv().BSS_CURRENT_SERVER_JOB_ID or game.JobId
 
 local VISITED = getgenv().BSS_VISITED_JOB_IDS
 local RECENT = getgenv().BSS_RECENT_JOB_IDS
-local HIDDEN = getgenv().BSS_HIDDEN_JOB_IDS
+local pendingTeleport = nil
 
 local function safeDestroyGui()
     local old = CoreGui:FindFirstChild("BSS_UI")
@@ -175,22 +176,61 @@ local function pushRecent(jobId)
     end
 end
 
-local function hideJobId(jobId)
-    if jobId and jobId ~= "" then
-        HIDDEN[jobId] = true
+local function countVisited()
+    local total = 0
+    for _ in pairs(VISITED) do
+        total += 1
+    end
+    return total
+end
+
+local function trimVisited()
+    if countVisited() <= VISITED_LIMIT then
+        return
+    end
+
+    local keep = {}
+    for _, jobId in ipairs(RECENT) do
+        keep[jobId] = true
+    end
+
+    for jobId in pairs(VISITED) do
+        if not keep[jobId] then
+            VISITED[jobId] = nil
+            if countVisited() <= VISITED_LIMIT then
+                break
+            end
+        end
     end
 end
 
-local function isHidden(jobId)
-    return jobId and HIDDEN[jobId] == true
+local function addVisited(jobId)
+    if not jobId or jobId == "" then
+        return
+    end
+
+    VISITED[jobId] = true
+    trimVisited()
+end
+
+local function removeRecent(jobId)
+    if not jobId or jobId == "" then
+        return
+    end
+
+    for i = #RECENT, 1, -1 do
+        if RECENT[i] == jobId then
+            table.remove(RECENT, i)
+        end
+    end
 end
 
 local function markCurrentServer()
     local currentJobId = game.JobId
     if currentJobId and currentJobId ~= "" then
-        VISITED[currentJobId] = true
+        addVisited(currentJobId)
         pushRecent(currentJobId)
-        hideJobId(currentJobId)
+        getgenv().BSS_CURRENT_SERVER_JOB_ID = currentJobId
     end
 end
 
@@ -216,10 +256,6 @@ local function isValidServer(server)
         return false
     end
 
-    if isHidden(server.jobId) then
-        return false
-    end
-
     if hasTooManyPlayers(server) then
         return false
     end
@@ -242,13 +278,20 @@ end
 local function fetchValidated()
     local url = ("https://bss-tools.com/api/workspaces/%s/validated"):format(userId)
 
-    local res = request({
-        Url = url,
-        Method = "GET",
-        Headers = {
-            ["secret-key"] = secretKey
-        }
-    })
+    local okRequest, res = pcall(function()
+        return request({
+            Url = url,
+            Method = "GET",
+            Headers = {
+                ["secret-key"] = secretKey
+            }
+        })
+    end)
+
+    if not okRequest then
+        warn("API request failed")
+        return {}
+    end
 
     if not res or res.StatusCode ~= 200 then
         warn("API error:", res and res.Body or "no response")
@@ -331,7 +374,7 @@ local function sortServersForUi(servers)
     local copy = {}
 
     for _, server in ipairs(servers) do
-        if getPriority(server) > 0 and not isHidden(server.jobId) and server.jobId ~= game.JobId then
+        if isValidServer(server) then
             table.insert(copy, server)
         end
     end
@@ -444,7 +487,7 @@ targetLabel.TextXAlignment = Enum.TextXAlignment.Left
 targetLabel.TextYAlignment = Enum.TextYAlignment.Top
 targetLabel.TextWrapped = true
 targetLabel.RichText = true
-targetLabel.Text = "Target: none"
+targetLabel.Text = "Current: none"
 
 local listHeader = Instance.new("TextLabel")
 listHeader.Parent = frame
@@ -550,7 +593,6 @@ local function formatServerLine(server)
     local rarity = tostring(server.rarity or "")
     local players = tonumber(server.playerCount) or 0
     local remaining = getRemainingSeconds(server)
-    local field = tostring(server.field or "?")
     local color = getServerColor(server)
 
     local nameText
@@ -574,7 +616,7 @@ local function formatServerLine(server)
         end
     end
 
-    return string.format("%s | %dP%s | %s", nameText, players, extra, field)
+    return string.format("%s | %dP%s", nameText, players, extra)
 end
 
 local function updateServerList(servers, best)
@@ -606,33 +648,13 @@ local function updateServerList(servers, best)
         itemText.Parent = item
         itemText.BackgroundTransparency = 1
         itemText.Position = UDim2.new(0, 10, 0, 0)
-        itemText.Size = UDim2.new(1, -54, 1, 0)
+        itemText.Size = UDim2.new(1, -20, 1, 0)
         itemText.Font = Enum.Font.Gotham
         itemText.TextSize = 12
         itemText.TextColor3 = Color3.fromRGB(235, 235, 240)
         itemText.TextXAlignment = Enum.TextXAlignment.Left
         itemText.RichText = true
         itemText.Text = formatServerLine(server)
-
-        local deleteButton = Instance.new("TextButton")
-        deleteButton.Parent = item
-        deleteButton.Size = UDim2.new(0, 28, 0, 24)
-        deleteButton.Position = UDim2.new(1, -34, 0.5, -12)
-        deleteButton.BackgroundColor3 = Color3.fromRGB(38, 38, 46)
-        deleteButton.BorderSizePixel = 0
-        deleteButton.Font = Enum.Font.GothamBold
-        deleteButton.TextSize = 13
-        deleteButton.TextColor3 = Color3.fromRGB(220, 220, 225)
-        deleteButton.Text = "🗑"
-
-        local deleteCorner = Instance.new("UICorner")
-        deleteCorner.CornerRadius = UDim.new(0, 6)
-        deleteCorner.Parent = deleteButton
-
-        deleteButton.MouseButton1Click:Connect(function()
-            hideJobId(server.jobId)
-            updateServerList(servers, best)
-        end)
     end
 
     if shown == 0 then
@@ -660,6 +682,25 @@ local function updateServerList(servers, best)
 
     task.wait()
     scrolling.CanvasSize = UDim2.new(0, 0, 0, layout.AbsoluteContentSize.Y)
+end
+
+local function getCurrentServerText()
+    local currentType = getgenv().BSS_CURRENT_SERVER_TYPE
+    local currentRarity = getgenv().BSS_CURRENT_SERVER_RARITY
+    local currentJobId = getgenv().BSS_CURRENT_SERVER_JOB_ID or game.JobId
+
+    if not currentJobId or currentJobId == "" then
+        return "Current: none"
+    end
+
+    local currentName = currentType or "Unknown"
+    if currentType == "Sprout" and currentRarity then
+        currentName = string.format("%s %s", currentType, currentRarity)
+    elseif currentType == "Vicious" and currentRarity == "Gifted" then
+        currentName = "Vicious Gifted"
+    end
+
+    return string.format("Current: %s | JobId: %s", currentName, currentJobId)
 end
 
 local function updateTopInfo(best, force, joinedAgo, cooldown)
@@ -705,16 +746,40 @@ local function updateTopInfo(best, force, joinedAgo, cooldown)
         end
 
         targetLabel.Text = string.format(
-            "Target: %s | Field: %s | Players: %s%s",
+            "%s\nNext: %s | Field: %s | Players: %s%s",
+            getCurrentServerText(),
             nameText,
             tostring(best.field or "?"),
             tostring(best.playerCount or "?"),
             extra
         )
     else
-        targetLabel.Text = "Target: none"
+        targetLabel.Text = getCurrentServerText()
     end
 end
+
+TeleportService.TeleportInitFailed:Connect(function(player, result, errorMessage, placeIdValue, jobId)
+    if player ~= LocalPlayer then
+        return
+    end
+
+    local failedJobId = jobId or (pendingTeleport and pendingTeleport.jobId)
+    if failedJobId and failedJobId ~= "" then
+        VISITED[failedJobId] = nil
+        removeRecent(failedJobId)
+    end
+
+    if pendingTeleport and failedJobId == pendingTeleport.jobId then
+        getgenv().BSS_CURRENT_SERVER_TYPE = pendingTeleport.previousType
+        getgenv().BSS_CURRENT_SERVER_RARITY = pendingTeleport.previousRarity
+        getgenv().BSS_CURRENT_SERVER_JOB_ID = pendingTeleport.previousJobId
+        getgenv().BSS_NEXT_TELEPORT_COOLDOWN = pendingTeleport.previousCooldown
+        getgenv().BSS_SERVER_JOIN_TIME = pendingTeleport.previousJoinTime
+        pendingTeleport = nil
+    end
+
+    warn("Teleport failed:", tostring(result), tostring(errorMessage or ""))
+end)
 
 markCurrentServer()
 
@@ -751,16 +816,49 @@ while true do
         print("JobId:", best.jobId)
         print("==============================")
 
-        VISITED[best.jobId] = true
+        pendingTeleport = {
+            jobId = best.jobId,
+            previousType = getgenv().BSS_CURRENT_SERVER_TYPE,
+            previousRarity = getgenv().BSS_CURRENT_SERVER_RARITY,
+            previousJobId = getgenv().BSS_CURRENT_SERVER_JOB_ID,
+            previousCooldown = getgenv().BSS_NEXT_TELEPORT_COOLDOWN,
+            previousJoinTime = getgenv().BSS_SERVER_JOIN_TIME,
+        }
+
+        addVisited(best.jobId)
         pushRecent(best.jobId)
 
+        if isVicious(best) and best.gifted == true then
+            getgenv().BSS_CURRENT_SERVER_RARITY = "Gifted"
+        else
+            getgenv().BSS_CURRENT_SERVER_RARITY = best.rarity
+        end
+
         getgenv().BSS_CURRENT_SERVER_TYPE = best.type
-        getgenv().BSS_CURRENT_SERVER_RARITY = best.rarity
+        getgenv().BSS_CURRENT_SERVER_JOB_ID = best.jobId
         getgenv().BSS_NEXT_TELEPORT_COOLDOWN = getCooldownForServer(best)
         getgenv().BSS_SERVER_JOIN_TIME = tick()
 
-        TeleportService:TeleportToPlaceInstance(placeId, best.jobId, LocalPlayer)
-        task.wait(3)
+        local okTeleport, teleportError = pcall(function()
+            TeleportService:TeleportToPlaceInstance(placeId, best.jobId, LocalPlayer)
+        end)
+
+        if not okTeleport then
+            warn("Teleport call failed:", tostring(teleportError))
+            VISITED[best.jobId] = nil
+            removeRecent(best.jobId)
+
+            if pendingTeleport then
+                getgenv().BSS_CURRENT_SERVER_TYPE = pendingTeleport.previousType
+                getgenv().BSS_CURRENT_SERVER_RARITY = pendingTeleport.previousRarity
+                getgenv().BSS_CURRENT_SERVER_JOB_ID = pendingTeleport.previousJobId
+                getgenv().BSS_NEXT_TELEPORT_COOLDOWN = pendingTeleport.previousCooldown
+                getgenv().BSS_SERVER_JOIN_TIME = pendingTeleport.previousJoinTime
+                pendingTeleport = nil
+            end
+        else
+            task.wait(3)
+        end
     else
         print("[SCAN] Нет подходящих validated серверов")
     end
