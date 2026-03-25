@@ -147,10 +147,6 @@ local function shouldForceTeleport(best)
         return false
     end
 
-    if not hasKnownCurrentServer() then
-        return true
-    end
-
     local currentType = getgenv().BSS_CURRENT_SERVER_TYPE
     local currentRarity = getgenv().BSS_CURRENT_SERVER_RARITY
 
@@ -812,17 +808,13 @@ while true do
     local joinedAgo = tick() - getgenv().BSS_SERVER_JOIN_TIME
     local dynamicCooldown = getgenv().BSS_NEXT_TELEPORT_COOLDOWN or TELEPORT_COOLDOWN
     local force = shouldForceTeleport(best)
+    local hasCurrentServer = hasKnownCurrentServer()
+    local bypassCooldown = force or (not hasCurrentServer and best ~= nil)
 
     updateTopInfo(best, force, joinedAgo, dynamicCooldown)
     updateServerList(servers, best)
 
-    local hasCurrentServer = hasKnownCurrentServer()
-
-    if not hasCurrentServer and best then
-        force = true
-    end
-
-    if hasCurrentServer and not force and joinedAgo < dynamicCooldown then
+    if hasCurrentServer and not bypassCooldown and joinedAgo < dynamicCooldown then
         print("[JOIN COOLDOWN]", math.ceil(dynamicCooldown - joinedAgo), "sec left")
         continue
     end
