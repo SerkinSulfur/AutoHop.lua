@@ -142,6 +142,29 @@ local function hasKnownCurrentServer()
     return normalized ~= "" and normalized ~= "none" and normalized ~= "unknown"
 end
 
+local function hydrateCurrentServerFromList(servers)
+    if hasKnownCurrentServer() then
+        return true
+    end
+
+    for _, server in ipairs(servers) do
+        if server.jobId == game.JobId then
+            if isVicious(server) and server.gifted == true then
+                getgenv().BSS_CURRENT_SERVER_RARITY = "Gifted"
+            else
+                getgenv().BSS_CURRENT_SERVER_RARITY = server.rarity
+            end
+
+            getgenv().BSS_CURRENT_SERVER_TYPE = server.type
+            getgenv().BSS_CURRENT_SERVER_FIELD = server.field
+            getgenv().BSS_CURRENT_SERVER_JOB_ID = server.jobId
+            return true
+        end
+    end
+
+    return false
+end
+
 local function shouldForceTeleport(best)
     if not best then
         return false
@@ -803,12 +826,12 @@ while true do
     task.wait(CHECK_DELAY)
 
     local servers = fetchValidated()
+    local hasCurrentServer = hydrateCurrentServerFromList(servers)
     local best = pickBestServer(servers)
 
     local joinedAgo = tick() - getgenv().BSS_SERVER_JOIN_TIME
     local dynamicCooldown = getgenv().BSS_NEXT_TELEPORT_COOLDOWN or TELEPORT_COOLDOWN
     local force = shouldForceTeleport(best)
-    local hasCurrentServer = hasKnownCurrentServer()
     local bypassCooldown = force or (not hasCurrentServer and best ~= nil)
 
     updateTopInfo(best, force, joinedAgo, dynamicCooldown)
