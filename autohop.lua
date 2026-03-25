@@ -32,6 +32,7 @@ getgenv().BSS_CURRENT_SERVER_RARITY = getgenv().BSS_CURRENT_SERVER_RARITY or nil
 getgenv().BSS_NEXT_TELEPORT_COOLDOWN = getgenv().BSS_NEXT_TELEPORT_COOLDOWN or TELEPORT_COOLDOWN
 getgenv().BSS_UI_COLLAPSED = getgenv().BSS_UI_COLLAPSED or false
 getgenv().BSS_CURRENT_SERVER_JOB_ID = getgenv().BSS_CURRENT_SERVER_JOB_ID or game.JobId
+getgenv().BSS_CURRENT_SERVER_FIELD = getgenv().BSS_CURRENT_SERVER_FIELD or nil
 
 local VISITED = getgenv().BSS_VISITED_JOB_IDS
 local RECENT = getgenv().BSS_RECENT_JOB_IDS
@@ -598,12 +599,12 @@ local function formatServerLine(server)
     local nameText
     if isVicious(server) then
         if server.gifted == true then
-            nameText = string.format('<font color="%s">%s Gifted</font>', color, serverType)
+            nameText = string.format('<font color="%s">Gifted %s</font>', color, serverType)
         else
             nameText = string.format('<font color="%s">%s</font>', color, serverType)
         end
     else
-        nameText = string.format('<font color="%s">%s %s</font>', color, serverType, rarity)
+        nameText = string.format('<font color="%s">%s %s</font>', color, rarity, serverType)
     end
 
     local extra = ""
@@ -687,20 +688,24 @@ end
 local function getCurrentServerText()
     local currentType = getgenv().BSS_CURRENT_SERVER_TYPE
     local currentRarity = getgenv().BSS_CURRENT_SERVER_RARITY
-    local currentJobId = getgenv().BSS_CURRENT_SERVER_JOB_ID or game.JobId
+    local currentField = getgenv().BSS_CURRENT_SERVER_FIELD
 
-    if not currentJobId or currentJobId == "" then
+    if not currentType or currentType == "" then
         return "Current: none"
     end
 
-    local currentName = currentType or "Unknown"
+    local currentName = currentType
     if currentType == "Sprout" and currentRarity then
-        currentName = string.format("%s %s", currentType, currentRarity)
+        currentName = string.format("%s %s", currentRarity, currentType)
     elseif currentType == "Vicious" and currentRarity == "Gifted" then
-        currentName = "Vicious Gifted"
+        currentName = "Gifted Vicious"
     end
 
-    return string.format("Current: %s | JobId: %s", currentName, currentJobId)
+    if currentField and currentField ~= "" then
+        return string.format("Current: %s | Field: %s", currentName, tostring(currentField))
+    end
+
+    return string.format("Current: %s", currentName)
 end
 
 local function updateTopInfo(best, force, joinedAgo, cooldown)
@@ -726,12 +731,12 @@ local function updateTopInfo(best, force, joinedAgo, cooldown)
         local nameText
         if isVicious(best) then
             if best.gifted == true then
-                nameText = string.format('<font color="%s">%s Gifted</font>', color, tostring(best.type or "?"))
+                nameText = string.format('<font color="%s">Gifted %s</font>', color, tostring(best.type or "?"))
             else
                 nameText = string.format('<font color="%s">%s</font>', color, tostring(best.type or "?"))
             end
         else
-            nameText = string.format('<font color="%s">%s %s</font>', color, tostring(best.type or "?"), tostring(best.rarity or "?"))
+            nameText = string.format('<font color="%s">%s %s</font>', color, tostring(best.rarity or "?"), tostring(best.type or "?"))
         end
 
         local extra = ""
@@ -746,7 +751,7 @@ local function updateTopInfo(best, force, joinedAgo, cooldown)
         end
 
         targetLabel.Text = string.format(
-            "%s\nNext: %s | Field: %s | Players: %s%s",
+            "%s\nNext server: %s | Field: %s | Players: %s%s",
             getCurrentServerText(),
             nameText,
             tostring(best.field or "?"),
@@ -772,6 +777,7 @@ TeleportService.TeleportInitFailed:Connect(function(player, result, errorMessage
     if pendingTeleport and failedJobId == pendingTeleport.jobId then
         getgenv().BSS_CURRENT_SERVER_TYPE = pendingTeleport.previousType
         getgenv().BSS_CURRENT_SERVER_RARITY = pendingTeleport.previousRarity
+        getgenv().BSS_CURRENT_SERVER_FIELD = pendingTeleport.previousField
         getgenv().BSS_CURRENT_SERVER_JOB_ID = pendingTeleport.previousJobId
         getgenv().BSS_NEXT_TELEPORT_COOLDOWN = pendingTeleport.previousCooldown
         getgenv().BSS_SERVER_JOIN_TIME = pendingTeleport.previousJoinTime
@@ -821,6 +827,7 @@ while true do
             previousType = getgenv().BSS_CURRENT_SERVER_TYPE,
             previousRarity = getgenv().BSS_CURRENT_SERVER_RARITY,
             previousJobId = getgenv().BSS_CURRENT_SERVER_JOB_ID,
+            previousField = getgenv().BSS_CURRENT_SERVER_FIELD,
             previousCooldown = getgenv().BSS_NEXT_TELEPORT_COOLDOWN,
             previousJoinTime = getgenv().BSS_SERVER_JOIN_TIME,
         }
@@ -835,6 +842,7 @@ while true do
         end
 
         getgenv().BSS_CURRENT_SERVER_TYPE = best.type
+        getgenv().BSS_CURRENT_SERVER_FIELD = best.field
         getgenv().BSS_CURRENT_SERVER_JOB_ID = best.jobId
         getgenv().BSS_NEXT_TELEPORT_COOLDOWN = getCooldownForServer(best)
         getgenv().BSS_SERVER_JOIN_TIME = tick()
@@ -851,6 +859,7 @@ while true do
             if pendingTeleport then
                 getgenv().BSS_CURRENT_SERVER_TYPE = pendingTeleport.previousType
                 getgenv().BSS_CURRENT_SERVER_RARITY = pendingTeleport.previousRarity
+                getgenv().BSS_CURRENT_SERVER_FIELD = pendingTeleport.previousField
                 getgenv().BSS_CURRENT_SERVER_JOB_ID = pendingTeleport.previousJobId
                 getgenv().BSS_NEXT_TELEPORT_COOLDOWN = pendingTeleport.previousCooldown
                 getgenv().BSS_SERVER_JOIN_TIME = pendingTeleport.previousJoinTime
