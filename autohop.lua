@@ -10,7 +10,12 @@ local userId = getgenv().BSS_USER_ID
 local secretKey = getgenv().BSS_SECRET_KEY
 
 if not userId or not secretKey then
-    warn("Missing USER_ID or SECRET_KEY")
+    warn("[AUTOHOP] Missing BSS_USER_ID or BSS_SECRET_KEY")
+    return
+end
+
+if typeof(request) ~= "function" then
+    warn("[AUTOHOP] request(...) is not available in this executor")
     return
 end
 
@@ -22,7 +27,9 @@ local MIN_SPROUT_SECONDS = 40
 local MAX_PLAYERS = 4
 local RECENT_LIMIT = 5
 local VISITED_LIMIT = 100
-local WAIT_AFTER_SPROUT_DESPAWN = 25
+
+local WAIT_AFTER_SPROUT_DESPAWN = 30
+local WORLD_LOAD_DELAY = 5
 
 getgenv().BSS_VISITED_JOB_IDS = getgenv().BSS_VISITED_JOB_IDS or {}
 getgenv().BSS_RECENT_JOB_IDS = getgenv().BSS_RECENT_JOB_IDS or {}
@@ -34,98 +41,13 @@ getgenv().BSS_NEXT_TELEPORT_COOLDOWN = getgenv().BSS_NEXT_TELEPORT_COOLDOWN or T
 getgenv().BSS_UI_COLLAPSED = getgenv().BSS_UI_COLLAPSED or false
 getgenv().BSS_CURRENT_SERVER_JOB_ID = getgenv().BSS_CURRENT_SERVER_JOB_ID or game.JobId
 getgenv().BSS_CURRENT_SERVER_FIELD = getgenv().BSS_CURRENT_SERVER_FIELD or nil
-getgenv().BSS_AUTO_FAILOVER = getgenv().BSS_AUTO_FAILOVER or true
 
 local VISITED = getgenv().BSS_VISITED_JOB_IDS
 local RECENT = getgenv().BSS_RECENT_JOB_IDS
 local pendingTeleport = nil
+
 local isProcessingSprout = false
-
--- ===================== ФУНКЦИИ ПРОВЕРКИ SPROUT =====================
-
-local function checkSproutExists()
-    -- Проверяем наличие Sprout в workspace.Sprouts
-    local sproutsFolder = workspace:FindFirstChild("Sprouts")
-    if sproutsFolder then
-        local sprout = sproutsFolder:FindFirstChild("Sprout")
-        if sprout and sprout:IsA("Model") then
-            return true
-        end
-    end
-    
-    -- Альтернативная проверка
-    local sprout = workspace:FindFirstChild("Sprout")
-    if sprout and sprout:IsA("Model") then
-        return true
-    end
-    
-    return false
-end
-
-local function waitForSproutDespawn()
-    print("[SPROUT] Sprout найден! Ожидаем его исчезновения...")
-    
-    -- Ждем пока Sprout исчезнет
-    while checkSproutExists() do
-        task.wait(1)
-        print("[SPROUT] Sprout все еще существует, ждем...")
-    end
-    
-    print("[SPROUT] Sprout исчез!")
-    
-    -- Ждем 25 секунд после исчезновения
-    print("[SPROUT] Ожидание", WAIT_AFTER_SPROUT_DESPAWN, "секунд перед переходом...")
-    
-    for i = WAIT_AFTER_SPROUT_DESPAWN, 1, -1 do
-        print("[SPROUT] Переход через", i, "секунд...")
-        task.wait(1)
-    end
-    
-    print("[SPROUT] Ожидание завершено, переходим на следующий сервер")
-end
-
-local function handleSproutServer()
-    -- Проверяем наличие Sprout на сервере
-    local hasSprout = checkSproutExists()
-    
-    if not hasSprout then
-        -- Sprout нет, сразу идем на следующий сервер
-        print("[SPROUT] Sprout НЕ НАЙДЕН на сервере! Переходим на следующий сервер...")
-        return "no_sprout"
-    else
-        -- Sprout есть, ждем его исчезновения + 25 секунд
-        print("[SPROUT] Sprout найден! Начинаем ожидание...")
-        waitForSproutDespawn()
-        return "sprout_completed"
-    end
-end
-
-local function findNextServerAfterCurrent()
-    print("[NEXT] Поиск следующего сервера...")
-    
-    -- Блокируем текущий сервер
-    local currentJobId = game.JobId
-    if currentJobId then
-        VISITED[currentJobId] = true
-        pushRecent(currentJobId)
-        print("[NEXT] Сервер", currentJobId, "заблокирован")
-    end
-    
-    -- Очищаем текущее состояние
-    getgenv().BSS_CURRENT_SERVER_TYPE = nil
-    getgenv().BSS_CURRENT_SERVER_RARITY = nil
-    getgenv().BSS_CURRENT_SERVER_FIELD = nil
-    getgenv().BSS_CURRENT_SERVER_JOB_ID = nil
-    
-    -- Сбрасываем кулдаун для немедленного поиска
-    getgenv().BSS_NEXT_TELEPORT_COOLDOWN = 0
-    getgenv().BSS_SERVER_JOIN_TIME = tick() - 60
-    
-    -- Небольшая задержка
-    task.wait(2)
-end
-
--- ===================== ОСТАЛЬНЫЕ ФУНКЦИИ =====================
+local worldReadyAt = tick() + WORLD_LOAD_DELAY
 
 local function safeDestroyGui()
     local old = CoreGui:FindFirstChild("BSS_UI")
@@ -316,6 +238,7 @@ local function trimVisited()
     for _, jobId in ipairs(RECENT) do
         keep[jobId] = true
     end
+    keep[game.JobId] = true
 
     for jobId in pairs(VISITED) do
         if not keep[jobId] then
@@ -412,12 +335,12 @@ local function fetchValidated()
     end)
 
     if not okRequest then
-        warn("API request failed")
+        warn("[AUTOHOP] API request failed")
         return {}
     end
 
     if not res or res.StatusCode ~= 200 then
-        warn("API error:", res and res.Body or "no response")
+        warn("[AUTOHOP] API error:", res and res.Body or "no response")
         return {}
     end
 
@@ -426,7 +349,7 @@ local function fetchValidated()
     end)
 
     if not ok or not data then
-        warn("JSON decode error")
+        warn("[AUTOHOP] JSON decode error")
         return {}
     end
 
@@ -509,8 +432,6 @@ local function sortServersForUi(servers)
     return copy
 end
 
--- ===================== СОЗДАНИЕ UI =====================
-
 safeDestroyGui()
 
 local gui = Instance.new("ScreenGui")
@@ -521,8 +442,8 @@ gui.Parent = CoreGui
 
 local frame = Instance.new("Frame")
 frame.Parent = gui
-frame.Size = UDim2.new(0, 340, 0, getgenv().BSS_UI_COLLAPSED and 44 or 440)
-frame.Position = UDim2.new(1, -355, 0.5, getgenv().BSS_UI_COLLAPSED and -22 or -220)
+frame.Size = UDim2.new(0, 360, 0, getgenv().BSS_UI_COLLAPSED and 44 or 470)
+frame.Position = UDim2.new(1, -375, 0.5, getgenv().BSS_UI_COLLAPSED and -22 or -235)
 frame.BackgroundColor3 = Color3.fromRGB(18, 18, 22)
 frame.BorderSizePixel = 0
 
@@ -561,7 +482,7 @@ title.Font = Enum.Font.GothamBold
 title.TextSize = 16
 title.TextColor3 = Color3.fromRGB(255, 255, 255)
 title.TextXAlignment = Enum.TextXAlignment.Left
-title.Text = "AutoHop"
+title.Text = "AutoHop Field Check"
 
 local collapseButton = Instance.new("TextButton")
 collapseButton.Parent = header
@@ -604,18 +525,19 @@ local sproutStatusLabel = Instance.new("TextLabel")
 sproutStatusLabel.Parent = frame
 sproutStatusLabel.BackgroundTransparency = 1
 sproutStatusLabel.Position = UDim2.new(0, 14, 0, 98)
-sproutStatusLabel.Size = UDim2.new(1, -28, 0, 20)
+sproutStatusLabel.Size = UDim2.new(1, -28, 0, 40)
 sproutStatusLabel.Font = Enum.Font.Gotham
-sproutStatusLabel.TextSize = 12
+sproutStatusLabel.TextSize = 13
 sproutStatusLabel.TextColor3 = Color3.fromRGB(150, 150, 160)
 sproutStatusLabel.TextXAlignment = Enum.TextXAlignment.Left
-sproutStatusLabel.Text = "Sprout: waiting..."
+sproutStatusLabel.TextWrapped = true
+sproutStatusLabel.Text = "🌱 Sprout: idle"
 
 local targetLabel = Instance.new("TextLabel")
 targetLabel.Parent = frame
 targetLabel.BackgroundTransparency = 1
-targetLabel.Position = UDim2.new(0, 14, 0, 120)
-targetLabel.Size = UDim2.new(1, -28, 0, 38)
+targetLabel.Position = UDim2.new(0, 14, 0, 142)
+targetLabel.Size = UDim2.new(1, -28, 0, 54)
 targetLabel.Font = Enum.Font.Gotham
 targetLabel.TextSize = 13
 targetLabel.TextColor3 = Color3.fromRGB(220, 220, 230)
@@ -628,7 +550,7 @@ targetLabel.Text = "Current: none"
 local listHeader = Instance.new("TextLabel")
 listHeader.Parent = frame
 listHeader.BackgroundTransparency = 1
-listHeader.Position = UDim2.new(0, 14, 0, 162)
+listHeader.Position = UDim2.new(0, 14, 0, 202)
 listHeader.Size = UDim2.new(1, -28, 0, 20)
 listHeader.Font = Enum.Font.GothamBold
 listHeader.TextSize = 13
@@ -638,8 +560,8 @@ listHeader.Text = "Servers"
 
 local listContainer = Instance.new("Frame")
 listContainer.Parent = frame
-listContainer.Position = UDim2.new(0, 12, 0, 188)
-listContainer.Size = UDim2.new(1, -24, 1, -200)
+listContainer.Position = UDim2.new(0, 12, 0, 228)
+listContainer.Size = UDim2.new(1, -24, 1, -240)
 listContainer.BackgroundColor3 = Color3.fromRGB(23, 23, 28)
 listContainer.BorderSizePixel = 0
 
@@ -678,7 +600,7 @@ local function setCollapsed(collapsed)
     listHeader.Visible = not collapsed
     listContainer.Visible = not collapsed
 
-    frame.Size = UDim2.new(0, 340, 0, collapsed and 44 or 440)
+    frame.Size = UDim2.new(0, 360, 0, collapsed and 44 or 470)
 end
 
 collapseButton.MouseButton1Click:Connect(function()
@@ -686,8 +608,6 @@ collapseButton.MouseButton1Click:Connect(function()
 end)
 
 setCollapsed(getgenv().BSS_UI_COLLAPSED)
-
--- ===================== ПЕРЕТАСКИВАНИЕ ОКНА =====================
 
 local dragging = false
 local dragStart
@@ -719,7 +639,12 @@ UserInputService.InputChanged:Connect(function(input)
     end
 end)
 
--- ===================== UI ФУНКЦИИ =====================
+local function updateSproutStatusUI(text, color)
+    sproutStatusLabel.Text = text
+    if color then
+        sproutStatusLabel.TextColor3 = color
+    end
+end
 
 local function clearServerList()
     for _, child in ipairs(scrolling:GetChildren()) do
@@ -750,6 +675,9 @@ local function formatServerLine(server)
     local extra = ""
     if isSprout(server) then
         extra = " | " .. (remaining == math.huge and "INF" or tostring(math.max(0, remaining)) .. "s")
+        if server.field then
+            extra = extra .. " | " .. tostring(server.field)
+        end
     elseif isVicious(server) then
         extra = " | Lv." .. tostring(server.level or "?")
         if server.gifted then
@@ -767,7 +695,7 @@ local function updateServerList(servers, best)
     local shown = 0
 
     for _, server in ipairs(sorted) do
-        shown = shown + 1
+        shown += 1
         if shown > 12 then
             break
         end
@@ -842,7 +770,7 @@ local function getCurrentServerText()
     end
 
     if currentField and currentField ~= "" then
-        return string.format("Current: %s | Field: %s", currentName, tostring(currentField))
+        return string.format("Current: %s | API Field: %s", currentName, tostring(currentField))
     end
 
     return string.format("Current: %s", currentName)
@@ -880,9 +808,11 @@ local function updateTopInfo(best, force, joinedAgo, cooldown)
         end
 
         local extra = ""
-
         if isSprout(best) then
             extra = " | Remaining: " .. (remaining == math.huge and "INF" or tostring(math.max(0, remaining)) .. "s")
+            if best.field then
+                extra = extra .. " | API Field: " .. tostring(best.field)
+            end
         elseif isVicious(best) then
             extra = " | Level: " .. tostring(best.level or "?")
             if best.gifted then
@@ -891,10 +821,9 @@ local function updateTopInfo(best, force, joinedAgo, cooldown)
         end
 
         targetLabel.Text = string.format(
-            "%s\nNext server: %s | Field: %s | Players: %s%s",
+            "%s\nNext server: %s | Players: %s%s",
             getCurrentServerText(),
             nameText,
-            tostring(best.field or "?"),
             tostring(best.playerCount or "?"),
             extra
         )
@@ -903,17 +832,341 @@ local function updateTopInfo(best, force, joinedAgo, cooldown)
     end
 end
 
-local function updateSproutStatusUI(text, color)
-    if not sproutStatusLabel then return end
-    sproutStatusLabel.Text = text
-    if color then
-        sproutStatusLabel.TextColor3 = color
+local FIELD_ALIASES = {
+    ["sunflowerfield"] = "Sunflower Field",
+    ["dandelionfield"] = "Dandelion Field",
+    ["mushroomfield"] = "Mushroom Field",
+    ["blueflowerfield"] = "Blue Flower Field",
+    ["cloverfield"] = "Clover Field",
+    ["spiderfield"] = "Spider Field",
+    ["bamboofield"] = "Bamboo Field",
+    ["strawberryfield"] = "Strawberry Field",
+    ["pineapplepatch"] = "Pineapple Patch",
+    ["pumpkinpatch"] = "Pumpkin Patch",
+    ["cactusfield"] = "Cactus Field",
+    ["rosefield"] = "Rose Field",
+    ["pinetreeforest"] = "Pine Tree Forest",
+    ["stumpfield"] = "Stump Field",
+    ["coconutfield"] = "Coconut Field",
+    ["pepperpatch"] = "Pepper Patch",
+    ["mountaintopfield"] = "Mountain Top Field",
+}
+
+local FIELD_CONTAINERS = {
+    "FlowerZones",
+    "FlowerFields",
+    "Fields",
+    "FieldZones",
+    "Zones",
+}
+
+local function normalizeFieldName(name)
+    if not name then
+        return nil
+    end
+
+    local clean = tostring(name):lower()
+    clean = clean:gsub("[%s%p_%-]+", "")
+
+    if clean == "" then
+        return nil
+    end
+
+    return FIELD_ALIASES[clean] or tostring(name)
+end
+
+local function getInstanceWorldPosition(instance)
+    if not instance then
+        return nil
+    end
+
+    if instance:IsA("BasePart") then
+        return instance.Position
+    end
+
+    if instance:IsA("Model") then
+        if instance.PrimaryPart then
+            return instance.PrimaryPart.Position
+        end
+
+        local okPivot, pivot = pcall(function()
+            return instance:GetPivot()
+        end)
+
+        if okPivot and pivot then
+            return pivot.Position
+        end
+
+        local part = instance:FindFirstChildWhichIsA("BasePart", true)
+        if part then
+            return part.Position
+        end
+    end
+
+    local descendantPart = instance:FindFirstChildWhichIsA("BasePart", true)
+    if descendantPart then
+        return descendantPart.Position
+    end
+
+    return nil
+end
+
+local function tryReadFieldNameFromInstance(instance)
+    if not instance then
+        return nil
+    end
+
+    local attributeCandidates = {
+        "Field", "FieldName", "field", "fieldName", "Zone", "ZoneName", "Patch", "PatchName"
+    }
+
+    for _, attr in ipairs(attributeCandidates) do
+        local value = instance:GetAttribute(attr)
+        if typeof(value) == "string" and value ~= "" then
+            return normalizeFieldName(value)
+        end
+    end
+
+    local objectCandidates = {
+        "Field", "FieldName", "Zone", "ZoneName", "Patch", "PatchName"
+    }
+
+    for _, childName in ipairs(objectCandidates) do
+        local child = instance:FindFirstChild(childName, true)
+        if child then
+            if child:IsA("StringValue") and child.Value ~= "" then
+                return normalizeFieldName(child.Value)
+            elseif child:IsA("ObjectValue") and child.Value then
+                return normalizeFieldName(child.Value.Name)
+            end
+        end
+    end
+
+    return nil
+end
+
+local function collectFieldAnchors()
+    local anchors = {}
+    local seen = {}
+
+    local function addAnchor(name, instance)
+        local normalized = normalizeFieldName(name)
+        if not normalized or seen[normalized] then
+            return
+        end
+
+        local position = getInstanceWorldPosition(instance)
+        if not position then
+            return
+        end
+
+        seen[normalized] = true
+        table.insert(anchors, {
+            name = normalized,
+            instance = instance,
+            position = position,
+        })
+    end
+
+    for _, containerName in ipairs(FIELD_CONTAINERS) do
+        local container = workspace:FindFirstChild(containerName)
+        if container then
+            for _, child in ipairs(container:GetChildren()) do
+                addAnchor(child.Name, child)
+            end
+        end
+    end
+
+    for key, pretty in pairs(FIELD_ALIASES) do
+        local candidate = workspace:FindFirstChild(pretty, true)
+        if candidate then
+            addAnchor(pretty, candidate)
+        end
+    end
+
+    return anchors
+end
+
+local function getNearestFieldNameFromPosition(position)
+    if not position then
+        return nil
+    end
+
+    local anchors = collectFieldAnchors()
+    local bestName = nil
+    local bestDistance = math.huge
+
+    for _, anchor in ipairs(anchors) do
+        local distance = (anchor.position - position).Magnitude
+        if distance < bestDistance then
+            bestDistance = distance
+            bestName = anchor.name
+        end
+    end
+
+    return bestName, bestDistance
+end
+
+local function findSproutModel()
+    local sproutsFolder = workspace:FindFirstChild("Sprouts")
+    if sproutsFolder then
+        local exact = sproutsFolder:FindFirstChild("Sprout")
+        if exact and exact:IsA("Model") then
+            return exact
+        end
+
+        for _, child in ipairs(sproutsFolder:GetChildren()) do
+            if child:IsA("Model") and child.Name:lower():find("sprout") then
+                return child
+            end
+        end
+    end
+
+    local fallback = workspace:FindFirstChild("Sprout")
+    if fallback and fallback:IsA("Model") then
+        return fallback
+    end
+
+    for _, child in ipairs(workspace:GetChildren()) do
+        if child:IsA("Model") and child.Name:lower():find("sprout") then
+            return child
+        end
+    end
+
+    return nil
+end
+
+local function resolveSproutField()
+    local sprout = findSproutModel()
+    if not sprout then
+        return nil, nil, nil
+    end
+
+    local directField = tryReadFieldNameFromInstance(sprout)
+    if directField then
+        return sprout, directField, "direct"
+    end
+
+    for _, descendant in ipairs(sprout:GetDescendants()) do
+        local descendantField = tryReadFieldNameFromInstance(descendant)
+        if descendantField then
+            return sprout, descendantField, "descendant"
+        end
+    end
+
+    local position = getInstanceWorldPosition(sprout)
+    local nearestFieldName, nearestDistance = getNearestFieldNameFromPosition(position)
+    if nearestFieldName then
+        return sprout, nearestFieldName, "nearest:" .. tostring(math.floor(nearestDistance))
+    end
+
+    return sprout, nil, "unknown"
+end
+
+local function checkSproutOnExpectedField(expectedField)
+    local sprout, actualField, source = resolveSproutField()
+
+    if not sprout then
+        return false, nil, "missing"
+    end
+
+    local normalizedExpected = normalizeFieldName(expectedField)
+    local normalizedActual = normalizeFieldName(actualField)
+
+    if not normalizedExpected or normalizedExpected == "" then
+        return true, normalizedActual, source or "no_expected_field"
+    end
+
+    if not normalizedActual then
+        return false, nil, source or "field_not_resolved"
+    end
+
+    return normalizedExpected == normalizedActual, normalizedActual, source
+end
+
+local function waitForSproutDespawn(expectedField)
+    print("[SPROUT] Росток найден на нужном поле, жду исчезновения...")
+    updateSproutStatusUI("🌱 Росток найден: ожидание исчезновения...", Color3.fromRGB(120, 255, 120))
+
+    while true do
+        local ok, actualField, source = checkSproutOnExpectedField(expectedField)
+        if not ok then
+            if not actualField then
+                break
+            else
+                print("[SPROUT] Росток больше не совпадает с нужным полем:", tostring(actualField), "source:", tostring(source))
+                break
+            end
+        end
+
+        task.wait(1)
+    end
+
+    print("[SPROUT] Росток исчез / больше не совпадает, жду", WAIT_AFTER_SPROUT_DESPAWN, "сек")
+    for i = WAIT_AFTER_SPROUT_DESPAWN, 1, -1 do
+        updateSproutStatusUI("⏳ Переход через " .. tostring(i) .. " сек", Color3.fromRGB(255, 210, 120))
+        task.wait(1)
     end
 end
 
--- ===================== ОБРАБОТКА ТЕЛЕПОРТА =====================
+local function invalidateCurrentServer()
+    local currentJobId = game.JobId
+    if currentJobId and currentJobId ~= "" then
+        addVisited(currentJobId)
+        pushRecent(currentJobId)
+    end
 
-TeleportService.TeleportInitFailed:Connect(function(player, result, errorMessage, placeIdValue, jobId)
+    getgenv().BSS_CURRENT_SERVER_TYPE = nil
+    getgenv().BSS_CURRENT_SERVER_RARITY = nil
+    getgenv().BSS_CURRENT_SERVER_FIELD = nil
+    getgenv().BSS_CURRENT_SERVER_JOB_ID = nil
+    getgenv().BSS_NEXT_TELEPORT_COOLDOWN = 0
+    getgenv().BSS_SERVER_JOIN_TIME = tick() - 60
+end
+
+local function processCurrentSproutServer()
+    if isProcessingSprout then
+        return
+    end
+
+    if getgenv().BSS_CURRENT_SERVER_TYPE ~= "Sprout" then
+        return
+    end
+
+    if tick() < worldReadyAt then
+        updateSproutStatusUI("🌱 Ожидание загрузки мира...", Color3.fromRGB(180, 180, 200))
+        return
+    end
+
+    isProcessingSprout = true
+
+    local expectedField = getgenv().BSS_CURRENT_SERVER_FIELD
+    local matches, actualField, source = checkSproutOnExpectedField(expectedField)
+
+    if matches then
+        print("[SPROUT] Совпадение поля. API:", tostring(expectedField), "| World:", tostring(actualField), "| Source:", tostring(source))
+        updateSproutStatusUI(
+            "✅ Росток на поле: " .. tostring(actualField or expectedField),
+            Color3.fromRGB(100, 255, 100)
+        )
+        waitForSproutDespawn(expectedField)
+        updateSproutStatusUI("➡️ Переход на следующий сервер...", Color3.fromRGB(100, 255, 100))
+        invalidateCurrentServer()
+    else
+        local worldFieldText = actualField and tostring(actualField) or "не определено"
+        print("[SPROUT] Росток не совпал. API:", tostring(expectedField), "| World:", worldFieldText, "| Source:", tostring(source))
+        updateSproutStatusUI(
+            "❌ Поле не совпало. API: " .. tostring(expectedField or "?") .. " | World: " .. worldFieldText,
+            Color3.fromRGB(255, 100, 100)
+        )
+        task.wait(1)
+        invalidateCurrentServer()
+    end
+
+    isProcessingSprout = false
+end
+
+TeleportService.TeleportInitFailed:Connect(function(player, result, errorMessage, _, jobId)
     if player ~= LocalPlayer then
         return
     end
@@ -934,28 +1187,59 @@ TeleportService.TeleportInitFailed:Connect(function(player, result, errorMessage
         pendingTeleport = nil
     end
 
-    warn("Teleport failed:", tostring(result), tostring(errorMessage or ""))
+    warn("[AUTOHOP] Teleport failed:", tostring(result), tostring(errorMessage or ""))
 end)
+
+getgenv().checkCurrentSprout = function()
+    local expectedField = getgenv().BSS_CURRENT_SERVER_FIELD
+    local matches, actualField, source = checkSproutOnExpectedField(expectedField)
+    print("[MANUAL] matches =", matches, "| expected =", tostring(expectedField), "| actual =", tostring(actualField), "| source =", tostring(source))
+    return matches, actualField, source
+end
+
+getgenv().getSproutField = function()
+    local _, actualField, source = resolveSproutField()
+    print("[MANUAL] sprout field =", tostring(actualField), "| source =", tostring(source))
+    return actualField, source
+end
+
+getgenv().setWaitAfterDespawn = function(seconds)
+    seconds = tonumber(seconds) or 30
+    WAIT_AFTER_SPROUT_DESPAWN = math.max(1, math.min(120, seconds))
+    print("[SETTINGS] Wait after Sprout despawn set to", WAIT_AFTER_SPROUT_DESPAWN, "seconds")
+    return WAIT_AFTER_SPROUT_DESPAWN
+end
 
 markCurrentServer()
 
--- ===================== ОСНОВНОЙ ЦИКЛ =====================
+print("=== AutoHop Field Check ===")
+print("checkCurrentSprout() - проверить совпадает ли росток с API полем")
+print("getSproutField() - показать поле реального ростка")
+print("setWaitAfterDespawn(сек) - изменить задержку после исчезновения")
 
 while true do
     task.wait(CHECK_DELAY)
-    
-    -- Если обрабатываем Sprout, не ищем новые сервера
+
     if isProcessingSprout then
-        print("[WAIT] Обработка Sprout в процессе...")
         continue
     end
 
     local servers = fetchValidated()
     local hasCurrentServer = hydrateCurrentServerFromList(servers)
-    local best = pickBestServer(servers)
 
     local joinedAgo = tick() - getgenv().BSS_SERVER_JOIN_TIME
     local dynamicCooldown = getgenv().BSS_NEXT_TELEPORT_COOLDOWN or TELEPORT_COOLDOWN
+
+    if hasCurrentServer and getgenv().BSS_CURRENT_SERVER_TYPE == "Sprout" then
+        updateTopInfo(nil, false, joinedAgo, dynamicCooldown)
+        updateServerList(servers, nil)
+        processCurrentSproutServer()
+        continue
+    else
+        updateSproutStatusUI("🌱 Sprout: idle", Color3.fromRGB(150, 150, 160))
+    end
+
+    local best = pickBestServer(servers)
     local force = shouldForceTeleport(best)
     local bypassCooldown = force or (not hasCurrentServer and best ~= nil)
 
@@ -963,7 +1247,6 @@ while true do
     updateServerList(servers, best)
 
     if hasCurrentServer and not bypassCooldown and joinedAgo < dynamicCooldown then
-        print("[JOIN COOLDOWN]", math.ceil(dynamicCooldown - joinedAgo), "sec left")
         continue
     end
 
@@ -1012,7 +1295,7 @@ while true do
         end)
 
         if not okTeleport then
-            warn("Teleport call failed:", tostring(teleportError))
+            warn("[AUTOHOP] Teleport call failed:", tostring(teleportError))
             VISITED[best.jobId] = nil
             removeRecent(best.jobId)
 
@@ -1026,73 +1309,8 @@ while true do
                 pendingTeleport = nil
             end
         else
-            -- УСПЕШНЫЙ ТЕЛЕПОРТ - ПРОВЕРЯЕМ SPROUT
-            print("[TELEPORT] Успешно телепортировался на", best.jobId)
-            
-            -- Ждем загрузки мира
-            task.wait(5)
-            
-            -- Проверяем тип сервера
-            if getgenv().BSS_CURRENT_SERVER_TYPE == "Sprout" then
-                isProcessingSprout = true
-                updateSproutStatusUI("🌱 Sprout сервер: проверка...", Color3.fromRGB(255, 200, 100))
-                
-                -- Запускаем обработку Sprout
-                local result = handleSproutServer()
-                
-                if result == "no_sprout" then
-                    updateSproutStatusUI("❌ Sprout не найден! Переход...", Color3.fromRGB(255, 100, 100))
-                    print("[SPROUT] Sprout отсутствует, ищем следующий сервер")
-                else
-                    updateSproutStatusUI("✅ Sprout завершен! Переход...", Color3.fromRGB(100, 255, 100))
-                    print("[SPROUT] Sprout обработан, переходим на следующий сервер")
-                end
-                
-                -- Переход на следующий сервер
-                findNextServerAfterCurrent()
-                
-                -- Сбрасываем флаг
-                isProcessingSprout = false
-                updateSproutStatusUI("🌱 Sprout: готов", Color3.fromRGB(150, 150, 160))
-            else
-                -- Vicious сервер, просто ждем
-                updateSproutStatusUI("⚔️ Vicious сервер (ожидание)", Color3.fromRGB(150, 150, 160))
-                print("[VICIOUS] Сервер типа", getgenv().BSS_CURRENT_SERVER_TYPE, "принят")
-            end
+            worldReadyAt = tick() + WORLD_LOAD_DELAY
+            task.wait(3)
         end
-    else
-        print("[SCAN] Нет подходящих validated серверов")
     end
 end
-
--- ===================== КОМАНДЫ ДЛЯ КОНСОЛИ =====================
-
-getgenv().checkCurrentSprout = function()
-    local hasSprout = checkSproutExists()
-    if hasSprout then
-        print("[MANUAL] ✓ Sprout найден в мире!")
-        return true
-    else
-        print("[MANUAL] ✗ Sprout НЕ НАЙДЕН!")
-        return false
-    end
-end
-
-getgenv().setWaitAfterDespawn = function(seconds)
-    seconds = tonumber(seconds) or 25
-    WAIT_AFTER_SPROUT_DESPAWN = math.max(1, math.min(60, seconds))
-    print("[SETTINGS] Wait after Sprout despawn set to", WAIT_AFTER_SPROUT_DESPAWN, "seconds")
-    return WAIT_AFTER_SPROUT_DESPAWN
-end
-
-print("=== AutoHop v4 - Sprout Scanner ===")
-print("")
-print("📌 ЛОГИКА РАБОТЫ:")
-print("  • Заходим на Sprout сервер из API")
-print("  • Если Sprout НЕТ → сразу на следующий сервер")
-print("  • Если Sprout ЕСТЬ → ждем исчезновения + 25 сек → следующий сервер")
-print("  • Vicious сервера пропускаются без проверки")
-print("")
-print("🔧 КОМАНДЫ:")
-print("  checkCurrentSprout() - проверить наличие Sprout")
-print("  setWaitAfterDespawn(сек) - изменить задержку после исчезновения")
