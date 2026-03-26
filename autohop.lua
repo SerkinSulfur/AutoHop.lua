@@ -41,6 +41,7 @@ getgenv().BSS_NEXT_TELEPORT_COOLDOWN = getgenv().BSS_NEXT_TELEPORT_COOLDOWN or T
 getgenv().BSS_UI_COLLAPSED = getgenv().BSS_UI_COLLAPSED or false
 getgenv().BSS_CURRENT_SERVER_JOB_ID = getgenv().BSS_CURRENT_SERVER_JOB_ID or game.JobId
 getgenv().BSS_CURRENT_SERVER_FIELD = getgenv().BSS_CURRENT_SERVER_FIELD or nil
+getgenv().BSS_IGNORE_CURRENT_JOB_ID = getgenv().BSS_IGNORE_CURRENT_JOB_ID or nil
 
 local VISITED = getgenv().BSS_VISITED_JOB_IDS
 local RECENT = getgenv().BSS_RECENT_JOB_IDS
@@ -154,6 +155,11 @@ local function hasKnownCurrentServer()
 end
 
 local function hydrateCurrentServerFromList(servers)
+    local ignoredJobId = getgenv().BSS_IGNORE_CURRENT_JOB_ID
+    if ignoredJobId and ignoredJobId == game.JobId then
+        return false
+    end
+
     if hasKnownCurrentServer() then
         return true
     end
@@ -977,7 +983,7 @@ local function collectFieldAnchors()
         end
     end
 
-    for key, pretty in pairs(FIELD_ALIASES) do
+    for _, pretty in pairs(FIELD_ALIASES) do
         local candidate = workspace:FindFirstChild(pretty, true)
         if candidate then
             addAnchor(pretty, candidate)
@@ -1089,12 +1095,11 @@ local function waitForSproutDespawn(expectedField)
     updateSproutStatusUI("🌱 Росток найден: ожидание исчезновения...", Color3.fromRGB(120, 255, 120))
 
     while true do
-        local ok, actualField, source = checkSproutOnExpectedField(expectedField)
-        if not ok then
+        local matches, actualField = checkSproutOnExpectedField(expectedField)
+        if not matches then
             if not actualField then
                 break
             else
-                print("[SPROUT] Росток больше не совпадает с нужным полем:", tostring(actualField), "source:", tostring(source))
                 break
             end
         end
@@ -1114,6 +1119,7 @@ local function invalidateCurrentServer()
     if currentJobId and currentJobId ~= "" then
         addVisited(currentJobId)
         pushRecent(currentJobId)
+        getgenv().BSS_IGNORE_CURRENT_JOB_ID = currentJobId
     end
 
     getgenv().BSS_CURRENT_SERVER_TYPE = nil
@@ -1124,7 +1130,85 @@ local function invalidateCurrentServer()
     getgenv().BSS_SERVER_JOIN_TIME = tick() - 60
 end
 
-local function processCurrentSproutServer()
+local function applyServerIdentity(server)
+    if isVicious(server) and server.gifted == true then
+        getgenv().BSS_CURRENT_SERVER_RARITY = "Gifted"
+    else
+        getgenv().BSS_CURRENT_SERVER_RARITY = server.rarity
+    end
+
+    getgenv().BSS_CURRENT_SERVER_TYPE = server.type
+    getgenv().BSS_CURRENT_SERVER_FIELD = server.field
+    getgenv().BSS_CURRENT_SERVER_JOB_ID = server.jobId
+end
+
+local function teleportToNextBestServer(servers)
+    local best = pickBestServer(servers)
+    if not best then
+        return false
+    end
+
+    local remaining = getRemainingSeconds(best)
+
+    print("========== SELECTED ==========")
+    print("Type:", best.type)
+    print("Rarity:", best.rarity)
+    print("Field:", best.field)
+    print("Players:", best.playerCount)
+    print("Gifted:", best.gifted)
+    print("Level:", best.level)
+    print("Priority:", getPriority(best))
+    print("Remaining:", remaining == math.huge and "INF" or remaining)
+    print("JobId:", best.jobId)
+    print("==============================")
+
+    pendingTeleport = {
+        jobId = best.jobId,
+        previousType = getgenv().BSS_CURRENT_SERVER_TYPE,
+        previousRarity = getgenv().BSS_CURRENT_SERVER_RARITY,
+        previousJobId = getgenv().BSS_CURRENT_SERVER_JOB_ID,
+        previousField = getgenv().BSS_CURRENT_SERVER_FIELD,
+        previousCooldown = getgenv().BSS_NEXT_TELEPORT_COOLDOWN,
+        previousJoinTime = getgenv().BSS_SERVER_JOIN_TIME,
+        previousIgnoreJobId = getgenv().BSS_IGNORE_CURRENT_JOB_ID,
+    }
+
+    addVisited(best.jobId)
+    pushRecent(best.jobId)
+    applyServerIdentity(best)
+    getgenv().BSS_NEXT_TELEPORT_COOLDOWN = getCooldownForServer(best)
+    getgenv().BSS_SERVER_JOIN_TIME = tick()
+    getgenv().BSS_IGNORE_CURRENT_JOB_ID = nil
+
+    local okTeleport, teleportError = pcall(function()
+        TeleportService:TeleportToPlaceInstance(placeId, best.jobId, LocalPlayer)
+    end)
+
+    if not okTeleport then
+        warn("[AUTOHOP] Teleport call failed:", tostring(teleportError))
+        VISITED[best.jobId] = nil
+        removeRecent(best.jobId)
+
+        if pendingTeleport then
+            getgenv().BSS_CURRENT_SERVER_TYPE = pendingTeleport.previousType
+            getgenv().BSS_CURRENT_SERVER_RARITY = pendingTeleport.previousRarity
+            getgenv().BSS_CURRENT_SERVER_FIELD = pendingTeleport.previousField
+            getgenv().BSS_CURRENT_SERVER_JOB_ID = pendingTeleport.previousJobId
+            getgenv().BSS_NEXT_TELEPORT_COOLDOWN = pendingTeleport.previousCooldown
+            getgenv().BSS_SERVER_JOIN_TIME = pendingTeleport.previousJoinTime
+            getgenv().BSS_IGNORE_CURRENT_JOB_ID = pendingTeleport.previousIgnoreJobId
+            pendingTeleport = nil
+        end
+
+        return false
+    end
+
+    worldReadyAt = tick() + WORLD_LOAD_DELAY
+    task.wait(3)
+    return true
+end
+
+local function processCurrentSproutServer(servers)
     if isProcessingSprout then
         return
     end
@@ -1159,8 +1243,13 @@ local function processCurrentSproutServer()
             "❌ Поле не совпало. API: " .. tostring(expectedField or "?") .. " | World: " .. worldFieldText,
             Color3.fromRGB(255, 100, 100)
         )
-        task.wait(1)
+
         invalidateCurrentServer()
+        task.wait(0.2)
+
+        if servers and #servers > 0 then
+            teleportToNextBestServer(servers)
+        end
     end
 
     isProcessingSprout = false
@@ -1184,6 +1273,7 @@ TeleportService.TeleportInitFailed:Connect(function(player, result, errorMessage
         getgenv().BSS_CURRENT_SERVER_JOB_ID = pendingTeleport.previousJobId
         getgenv().BSS_NEXT_TELEPORT_COOLDOWN = pendingTeleport.previousCooldown
         getgenv().BSS_SERVER_JOIN_TIME = pendingTeleport.previousJoinTime
+        getgenv().BSS_IGNORE_CURRENT_JOB_ID = pendingTeleport.previousIgnoreJobId
         pendingTeleport = nil
     end
 
@@ -1212,7 +1302,8 @@ end
 
 markCurrentServer()
 
-print("=== AutoHop Field Check ===")
+print("=== AutoHop Field Check FIXED ===")
+print("Если поле не совпало, скрипт сразу пытается уйти на следующий сервер.")
 print("checkCurrentSprout() - проверить совпадает ли росток с API полем")
 print("getSproutField() - показать поле реального ростка")
 print("setWaitAfterDespawn(сек) - изменить задержку после исчезновения")
@@ -1233,7 +1324,7 @@ while true do
     if hasCurrentServer and getgenv().BSS_CURRENT_SERVER_TYPE == "Sprout" then
         updateTopInfo(nil, false, joinedAgo, dynamicCooldown)
         updateServerList(servers, nil)
-        processCurrentSproutServer()
+        processCurrentSproutServer(servers)
         continue
     else
         updateSproutStatusUI("🌱 Sprout: idle", Color3.fromRGB(150, 150, 160))
@@ -1251,66 +1342,6 @@ while true do
     end
 
     if best then
-        local remaining = getRemainingSeconds(best)
-
-        print("========== SELECTED ==========")
-        print("Type:", best.type)
-        print("Rarity:", best.rarity)
-        print("Field:", best.field)
-        print("Players:", best.playerCount)
-        print("Gifted:", best.gifted)
-        print("Level:", best.level)
-        print("Priority:", getPriority(best))
-        print("Remaining:", remaining == math.huge and "INF" or remaining)
-        print("JobId:", best.jobId)
-        print("==============================")
-
-        pendingTeleport = {
-            jobId = best.jobId,
-            previousType = getgenv().BSS_CURRENT_SERVER_TYPE,
-            previousRarity = getgenv().BSS_CURRENT_SERVER_RARITY,
-            previousJobId = getgenv().BSS_CURRENT_SERVER_JOB_ID,
-            previousField = getgenv().BSS_CURRENT_SERVER_FIELD,
-            previousCooldown = getgenv().BSS_NEXT_TELEPORT_COOLDOWN,
-            previousJoinTime = getgenv().BSS_SERVER_JOIN_TIME,
-        }
-
-        addVisited(best.jobId)
-        pushRecent(best.jobId)
-
-        if isVicious(best) and best.gifted == true then
-            getgenv().BSS_CURRENT_SERVER_RARITY = "Gifted"
-        else
-            getgenv().BSS_CURRENT_SERVER_RARITY = best.rarity
-        end
-
-        getgenv().BSS_CURRENT_SERVER_TYPE = best.type
-        getgenv().BSS_CURRENT_SERVER_FIELD = best.field
-        getgenv().BSS_CURRENT_SERVER_JOB_ID = best.jobId
-        getgenv().BSS_NEXT_TELEPORT_COOLDOWN = getCooldownForServer(best)
-        getgenv().BSS_SERVER_JOIN_TIME = tick()
-
-        local okTeleport, teleportError = pcall(function()
-            TeleportService:TeleportToPlaceInstance(placeId, best.jobId, LocalPlayer)
-        end)
-
-        if not okTeleport then
-            warn("[AUTOHOP] Teleport call failed:", tostring(teleportError))
-            VISITED[best.jobId] = nil
-            removeRecent(best.jobId)
-
-            if pendingTeleport then
-                getgenv().BSS_CURRENT_SERVER_TYPE = pendingTeleport.previousType
-                getgenv().BSS_CURRENT_SERVER_RARITY = pendingTeleport.previousRarity
-                getgenv().BSS_CURRENT_SERVER_FIELD = pendingTeleport.previousField
-                getgenv().BSS_CURRENT_SERVER_JOB_ID = pendingTeleport.previousJobId
-                getgenv().BSS_NEXT_TELEPORT_COOLDOWN = pendingTeleport.previousCooldown
-                getgenv().BSS_SERVER_JOIN_TIME = pendingTeleport.previousJoinTime
-                pendingTeleport = nil
-            end
-        else
-            worldReadyAt = tick() + WORLD_LOAD_DELAY
-            task.wait(3)
-        end
+        teleportToNextBestServer(servers)
     end
 end
