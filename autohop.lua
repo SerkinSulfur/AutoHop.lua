@@ -5,7 +5,7 @@ local CoreGui = game:GetService("CoreGui")
 local UserInputService = game:GetService("UserInputService")
 
 local LocalPlayer = Players.LocalPlayer
-local ENV = getgenv()
+local ENV = getgenv and getgenv() or _G
 
 local userId = ENV.BSS_USER_ID
 local secretKey = ENV.BSS_SECRET_KEY
@@ -30,6 +30,7 @@ local RECENT_LIMIT = 5
 local VISITED_LIMIT = 100
 local WAIT_AFTER_SPROUT_DESPAWN = 30
 local WORLD_LOAD_DELAY = 5
+local MAX_TRACK_TIME = 60
 
 ENV.BSS_VISITED_JOB_IDS = ENV.BSS_VISITED_JOB_IDS or {}
 ENV.BSS_RECENT_JOB_IDS = ENV.BSS_RECENT_JOB_IDS or {}
@@ -1117,12 +1118,36 @@ local function bindTargetSprout()
     return false
 end
 
+local function isAliveVicious(obj)
+    if not obj or obj.Parent == nil then
+        return false
+    end
+
+    local lowerName = tostring(obj.Name or ""):lower()
+    if not lowerName:find("vicious") then
+        return false
+    end
+
+    local humanoid = obj:FindFirstChildOfClass("Humanoid") or obj:FindFirstChild("Humanoid", true)
+    if humanoid and humanoid.Health <= 0 then
+        return false
+    end
+
+    if obj:IsA("Model") then
+        local primary = obj.PrimaryPart or obj:FindFirstChildWhichIsA("BasePart", true)
+        if not primary then
+            return false
+        end
+    end
+
+    return true
+end
+
 local function findViciousInstance()
     local monsters = workspace:FindFirstChild("Monsters")
     if monsters then
         for _, child in ipairs(monsters:GetChildren()) do
-            local lowerName = tostring(child.Name or ""):lower()
-            if lowerName:find("vicious") then
+            if isAliveVicious(child) then
                 return child
             end
         end
@@ -1131,7 +1156,9 @@ local function findViciousInstance()
     for _, child in ipairs(workspace:GetDescendants()) do
         local lowerName = tostring(child.Name or ""):lower()
         if lowerName:find("vicious bee") and (child:IsA("Model") or child:IsA("BasePart")) then
-            return child
+            if isAliveVicious(child) then
+                return child
+            end
         end
     end
 
@@ -1160,7 +1187,18 @@ local function waitForSproutDespawn()
     log("SPROUT found, tracking AncestryChanged...")
     updateTrackerUI("🌱 Sprout найден: отслеживаю исчезновение...", Color3.fromRGB(120, 255, 120))
 
+    local startedAt = tick()
+
     while true do
+        if (tick() - startedAt) >= MAX_TRACK_TIME then
+            log("SPROUT timeout reached, hopping next")
+            updateTrackerUI("⚠️ Sprout timeout: переход дальше", Color3.fromRGB(255, 170, 90))
+            targetSprout = nil
+            farmedAt = nil
+            disconnectSproutConn()
+            return "timeout"
+        end
+
         if not targetSprout or targetSprout.Parent == nil then
             targetSprout = nil
             if farmedAt and (tick() - farmedAt) > WAIT_AFTER_SPROUT_DESPAWN then
@@ -1172,6 +1210,9 @@ local function waitForSproutDespawn()
             local elapsed = tick() - farmedAt
             local left = math.max(0, math.ceil(WAIT_AFTER_SPROUT_DESPAWN - elapsed))
             updateTrackerUI("⏳ После Sprout: " .. tostring(left) .. " сек", Color3.fromRGB(255, 210, 120))
+        else
+            local liveLeft = math.max(0, math.ceil(MAX_TRACK_TIME - (tick() - startedAt)))
+            updateTrackerUI("🌱 Sprout найден: timeout через " .. tostring(liveLeft) .. " сек", Color3.fromRGB(120, 255, 120))
         end
 
         task.wait()
@@ -1180,25 +1221,43 @@ local function waitForSproutDespawn()
     targetSprout = nil
     farmedAt = nil
     disconnectSproutConn()
+    return "done"
 end
 
 local function waitForViciousDespawn()
-    log("VICIOUS found, tracking AncestryChanged...")
+    log("VICIOUS found, tracking alive state...")
     updateTrackerUI("🐝 Vicious найден: отслеживаю исчезновение...", Color3.fromRGB(255, 160, 120))
 
+    local startedAt = tick()
+
     while true do
-        if not targetVicious or targetVicious.Parent == nil then
+        if (tick() - startedAt) >= MAX_TRACK_TIME then
+            log("VICIOUS timeout reached, hopping next")
+            updateTrackerUI("⚠️ Vicious timeout: переход дальше", Color3.fromRGB(255, 170, 90))
             targetVicious = nil
-            if viciousGoneAt then
-                break
-            end
+            viciousGoneAt = nil
+            disconnectViciousConn()
+            return "timeout"
         end
-        task.wait()
+
+        if not isAliveVicious(targetVicious) then
+            targetVicious = nil
+            if not viciousGoneAt then
+                viciousGoneAt = tick()
+            end
+            break
+        else
+            local liveLeft = math.max(0, math.ceil(MAX_TRACK_TIME - (tick() - startedAt)))
+            updateTrackerUI("🐝 Vicious найден: timeout через " .. tostring(liveLeft) .. " сек", Color3.fromRGB(255, 160, 120))
+        end
+
+        task.wait(0.2)
     end
 
     targetVicious = nil
     viciousGoneAt = nil
     disconnectViciousConn()
+    return "done"
 end
 
 local function invalidateCurrentServer()
@@ -1329,7 +1388,18 @@ local function processCurrentSproutServer(servers)
 
     if bindTargetSprout() then
         updateTrackerUI("✅ На сервере есть реальный Sprout", Color3.fromRGB(100, 255, 100))
-        waitForSproutDespawn()
+        local result = waitForSproutDespawn()
+
+        if result == "timeout" then
+            invalidateCurrentServer()
+            task.wait(0.2)
+            if servers and #servers > 0 then
+                teleportToNextBestServer(servers)
+            end
+            isProcessingSpecial = false
+            return
+        end
+
         updateTrackerUI("➡️ Переход на следующий сервер...", Color3.fromRGB(100, 255, 100))
         invalidateCurrentServer()
     else
@@ -1354,7 +1424,18 @@ local function processCurrentViciousServer(servers)
 
     if bindTargetVicious() then
         updateTrackerUI("✅ На сервере есть Vicious", Color3.fromRGB(255, 160, 120))
-        waitForViciousDespawn()
+        local result = waitForViciousDespawn()
+
+        if result == "timeout" then
+            invalidateCurrentServer()
+            task.wait(0.2)
+            if servers and #servers > 0 then
+                teleportToNextBestServer(servers)
+            end
+            isProcessingSpecial = false
+            return
+        end
+
         updateTrackerUI("➡️ Vicious пропал, хоп...", Color3.fromRGB(255, 160, 120))
         invalidateCurrentServer()
         if servers and #servers > 0 then
@@ -1404,11 +1485,11 @@ end
 markCurrentServer()
 refreshSettingsList()
 
-log("=== AutoHop Sprout + Vicious ===")
-log("Tabs: Servers / Settings")
+log("=== AutoHop Sprout + Vicious FIXED ===")
+log("Vicious checks alive state, not only AncestryChanged")
+log("Sprout / Vicious timeout = 60 sec")
 log("Vicious after despawn -> immediate hop")
 log("Gifted Vicious cooldown = 55 sec")
-log("Sprout ищется как Model или BasePart/MeshPart")
 
 while true do
     task.wait(CHECK_DELAY)
