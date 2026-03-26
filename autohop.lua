@@ -31,6 +31,7 @@ local VISITED_LIMIT = 100
 local WAIT_AFTER_SPROUT_DESPAWN = 30
 local WORLD_LOAD_DELAY = 5
 local MAX_TRACK_TIME = 60
+local MAX_HP_STUCK_TIME = 30
 
 ENV.BSS_VISITED_JOB_IDS = ENV.BSS_VISITED_JOB_IDS or {}
 ENV.BSS_RECENT_JOB_IDS = ENV.BSS_RECENT_JOB_IDS or {}
@@ -68,6 +69,10 @@ local sproutConn = nil
 local targetVicious = nil
 local viciousGoneAt = nil
 local viciousConn = nil
+local viciousHumanoidConn = nil
+
+local currentSproutHP = nil
+local currentViciousHP = nil
 
 local function log(...)
     print("[AUTOHOP]", ...)
@@ -478,8 +483,8 @@ gui.Parent = CoreGui
 
 local frame = Instance.new("Frame")
 frame.Parent = gui
-frame.Size = UDim2.new(0, 380, 0, ENV.BSS_UI_COLLAPSED and 44 or 510)
-frame.Position = UDim2.new(1, -395, 0.5, ENV.BSS_UI_COLLAPSED and -22 or -255)
+frame.Size = UDim2.new(0, 380, 0, ENV.BSS_UI_COLLAPSED and 44 or 530)
+frame.Position = UDim2.new(1, -395, 0.5, ENV.BSS_UI_COLLAPSED and -22 or -265)
 frame.BackgroundColor3 = Color3.fromRGB(18, 18, 22)
 frame.BorderSizePixel = 0
 
@@ -569,10 +574,21 @@ trackerLabel.TextXAlignment = Enum.TextXAlignment.Left
 trackerLabel.TextWrapped = true
 trackerLabel.Text = "Tracker: idle"
 
+local hpLabel = Instance.new("TextLabel")
+hpLabel.Parent = frame
+hpLabel.BackgroundTransparency = 1
+hpLabel.Position = UDim2.new(0, 14, 0, 138)
+hpLabel.Size = UDim2.new(1, -28, 0, 22)
+hpLabel.Font = Enum.Font.Gotham
+hpLabel.TextSize = 13
+hpLabel.TextColor3 = Color3.fromRGB(205, 205, 215)
+hpLabel.TextXAlignment = Enum.TextXAlignment.Left
+hpLabel.Text = "HP: Sprout - | Vicious -"
+
 local targetLabel = Instance.new("TextLabel")
 targetLabel.Parent = frame
 targetLabel.BackgroundTransparency = 1
-targetLabel.Position = UDim2.new(0, 14, 0, 142)
+targetLabel.Position = UDim2.new(0, 14, 0, 164)
 targetLabel.Size = UDim2.new(1, -28, 0, 56)
 targetLabel.Font = Enum.Font.Gotham
 targetLabel.TextSize = 13
@@ -585,7 +601,7 @@ targetLabel.Text = "Current: none"
 
 local tabBar = Instance.new("Frame")
 tabBar.Parent = frame
-tabBar.Position = UDim2.new(0, 12, 0, 202)
+tabBar.Position = UDim2.new(0, 12, 0, 224)
 tabBar.Size = UDim2.new(1, -24, 0, 34)
 tabBar.BackgroundTransparency = 1
 
@@ -619,8 +635,8 @@ end
 
 local contentHolder = Instance.new("Frame")
 contentHolder.Parent = frame
-contentHolder.Position = UDim2.new(0, 12, 0, 242)
-contentHolder.Size = UDim2.new(1, -24, 1, -254)
+contentHolder.Position = UDim2.new(0, 12, 0, 264)
+contentHolder.Size = UDim2.new(1, -24, 1, -276)
 contentHolder.BackgroundColor3 = Color3.fromRGB(23, 23, 28)
 contentHolder.BorderSizePixel = 0
 
@@ -692,11 +708,12 @@ local function setCollapsed(collapsed)
     statusLabel.Visible = not collapsed
     cooldownLabel.Visible = not collapsed
     trackerLabel.Visible = not collapsed
+    hpLabel.Visible = not collapsed
     targetLabel.Visible = not collapsed
     tabBar.Visible = not collapsed
     contentHolder.Visible = not collapsed
 
-    frame.Size = UDim2.new(0, 380, 0, collapsed and 44 or 510)
+    frame.Size = UDim2.new(0, 380, 0, collapsed and 44 or 530)
 end
 
 local function setActiveTab(tabName)
@@ -760,6 +777,12 @@ local function updateTrackerUI(text, color)
     if color then
         trackerLabel.TextColor3 = color
     end
+end
+
+local function updateHPUI()
+    local sproutText = currentSproutHP and tostring(currentSproutHP) or "-"
+    local viciousText = currentViciousHP and tostring(currentViciousHP) or "-"
+    hpLabel.Text = "HP: Sprout " .. sproutText .. " | Vicious " .. viciousText
 end
 
 local function clearServerList()
@@ -1056,45 +1079,80 @@ local function disconnectViciousConn()
         viciousConn:Disconnect()
         viciousConn = nil
     end
+    if viciousHumanoidConn then
+        viciousHumanoidConn:Disconnect()
+        viciousHumanoidConn = nil
+    end
 end
 
-local function isSproutInstance(obj)
+local function getSproutHP(obj)
     if not obj then
+        return nil
+    end
+
+    local guiPos = obj:FindFirstChild("GuiPos")
+    if not guiPos then
+        guiPos = obj:FindFirstChild("GuiPos", true)
+    end
+    if not guiPos then
+        return nil
+    end
+
+    local label = guiPos:FindFirstChildWhichIsA("TextLabel", true)
+    if not label then
+        return nil
+    end
+
+    local text = tostring(label.Text or "")
+    if text == "" then
+        return nil
+    end
+
+    local digits = text:gsub("[^%d]", "")
+    if digits == "" then
+        return nil
+    end
+
+    return tonumber(digits)
+end
+
+local function isAliveSprout(obj)
+    if not obj or obj.Parent == nil then
+        return false
+    end
+
+    local sproutsFolder = workspace:FindFirstChild("Sprouts")
+    if not sproutsFolder then
+        return false
+    end
+
+    local exact = sproutsFolder:FindFirstChild("Sprout")
+    if exact ~= obj then
         return false
     end
 
     local lowerName = tostring(obj.Name or ""):lower()
-    if lowerName ~= "sprout" and not lowerName:find("sprout") then
+    if lowerName ~= "sprout" then
         return false
     end
 
-    return obj:IsA("Model") or obj:IsA("BasePart")
+    local hp = getSproutHP(obj)
+    if not hp or hp <= 0 then
+        return false
+    end
+
+    return true
 end
 
 local function findSproutInstance()
     local sproutsFolder = workspace:FindFirstChild("Sprouts")
-    if sproutsFolder then
-        local exact = sproutsFolder:FindFirstChild("Sprout")
-        if isSproutInstance(exact) then
-            return exact
-        end
-
-        for _, child in ipairs(sproutsFolder:GetChildren()) do
-            if isSproutInstance(child) then
-                return child
-            end
-        end
+    if not sproutsFolder then
+        return nil
     end
 
-    local fallback = workspace:FindFirstChild("Sprout")
-    if isSproutInstance(fallback) then
-        return fallback
-    end
-
-    for _, child in ipairs(workspace:GetChildren()) do
-        if isSproutInstance(child) then
-            return child
-        end
+    local exact = sproutsFolder:FindFirstChild("Sprout")
+    if exact and isAliveSprout(exact) then
+        return exact
     end
 
     return nil
@@ -1118,26 +1176,62 @@ local function bindTargetSprout()
     return false
 end
 
+local function getViciousHumanoid(obj)
+    if not obj then
+        return nil
+    end
+
+    if obj:IsA("Model") then
+        return obj:FindFirstChildOfClass("Humanoid") or obj:FindFirstChild("Humanoid", true)
+    end
+
+    return nil
+end
+
+local function getViciousHP(obj)
+    local humanoid = getViciousHumanoid(obj)
+    if not humanoid then
+        return nil
+    end
+
+    return math.floor(humanoid.Health + 0.5)
+end
+
 local function isAliveVicious(obj)
     if not obj or obj.Parent == nil then
         return false
     end
 
+    local monsters = workspace:FindFirstChild("Monsters")
+    if not monsters then
+        return false
+    end
+
+    if obj.Parent ~= monsters then
+        return false
+    end
+
     local lowerName = tostring(obj.Name or ""):lower()
-    if not lowerName:find("vicious") then
+    if not lowerName:find("vicious bee") then
         return false
     end
 
-    local humanoid = obj:FindFirstChildOfClass("Humanoid") or obj:FindFirstChild("Humanoid", true)
-    if humanoid and humanoid.Health <= 0 then
+    if not obj:IsA("Model") then
         return false
     end
 
-    if obj:IsA("Model") then
-        local primary = obj.PrimaryPart or obj:FindFirstChildWhichIsA("BasePart", true)
-        if not primary then
-            return false
-        end
+    local humanoid = getViciousHumanoid(obj)
+    if not humanoid then
+        return false
+    end
+
+    if humanoid.Health <= 0 then
+        return false
+    end
+
+    local root = obj.PrimaryPart or obj:FindFirstChild("HumanoidRootPart") or obj:FindFirstChildWhichIsA("BasePart", true)
+    if not root then
+        return false
     end
 
     return true
@@ -1145,20 +1239,13 @@ end
 
 local function findViciousInstance()
     local monsters = workspace:FindFirstChild("Monsters")
-    if monsters then
-        for _, child in ipairs(monsters:GetChildren()) do
-            if isAliveVicious(child) then
-                return child
-            end
-        end
+    if not monsters then
+        return nil
     end
 
-    for _, child in ipairs(workspace:GetDescendants()) do
-        local lowerName = tostring(child.Name or ""):lower()
-        if lowerName:find("vicious bee") and (child:IsA("Model") or child:IsA("BasePart")) then
-            if isAliveVicious(child) then
-                return child
-            end
+    for _, child in ipairs(monsters:GetChildren()) do
+        if isAliveVicious(child) then
+            return child
         end
     end
 
@@ -1171,12 +1258,26 @@ local function bindTargetVicious()
     viciousGoneAt = nil
 
     if targetVicious then
+        local humanoid = getViciousHumanoid(targetVicious)
+
         viciousConn = targetVicious.AncestryChanged:Connect(function(_, parent)
             if parent == nil and not viciousGoneAt then
                 viciousGoneAt = tick()
                 disconnectViciousConn()
             end
         end)
+
+        if humanoid then
+            viciousHumanoidConn = humanoid.HealthChanged:Connect(function(health)
+                currentViciousHP = math.floor(health + 0.5)
+                updateHPUI()
+                if health <= 0 and not viciousGoneAt then
+                    viciousGoneAt = tick()
+                    disconnectViciousConn()
+                end
+            end)
+        end
+
         return true
     end
 
@@ -1184,25 +1285,53 @@ local function bindTargetVicious()
 end
 
 local function waitForSproutDespawn()
-    log("SPROUT found, tracking AncestryChanged...")
+    log("SPROUT found, tracking alive state...")
     updateTrackerUI("🌱 Sprout найден: отслеживаю исчезновение...", Color3.fromRGB(120, 255, 120))
 
     local startedAt = tick()
+    local lastHP = getSproutHP(targetSprout)
+    currentSproutHP = lastHP
+    updateHPUI()
+    local lastHPChangeAt = tick()
 
     while true do
         if (tick() - startedAt) >= MAX_TRACK_TIME then
             log("SPROUT timeout reached, hopping next")
             updateTrackerUI("⚠️ Sprout timeout: переход дальше", Color3.fromRGB(255, 170, 90))
+            currentSproutHP = nil
+            updateHPUI()
             targetSprout = nil
             farmedAt = nil
             disconnectSproutConn()
             return "timeout"
         end
 
-        if not targetSprout or targetSprout.Parent == nil then
+        if not isAliveSprout(targetSprout) then
+            if not farmedAt then
+                farmedAt = tick()
+            end
+            currentSproutHP = nil
+            updateHPUI()
             targetSprout = nil
-            if farmedAt and (tick() - farmedAt) > WAIT_AFTER_SPROUT_DESPAWN then
-                break
+        else
+            local hp = getSproutHP(targetSprout)
+            currentSproutHP = hp
+            updateHPUI()
+
+            if hp and hp ~= lastHP then
+                lastHP = hp
+                lastHPChangeAt = tick()
+            end
+
+            if (tick() - lastHPChangeAt) >= MAX_HP_STUCK_TIME then
+                log("SPROUT hp stuck reached, hopping next")
+                updateTrackerUI("⚠️ Sprout HP не меняется 30 сек", Color3.fromRGB(255, 170, 90))
+                currentSproutHP = nil
+                updateHPUI()
+                targetSprout = nil
+                farmedAt = nil
+                disconnectSproutConn()
+                return "hp_stuck"
             end
         end
 
@@ -1210,14 +1339,20 @@ local function waitForSproutDespawn()
             local elapsed = tick() - farmedAt
             local left = math.max(0, math.ceil(WAIT_AFTER_SPROUT_DESPAWN - elapsed))
             updateTrackerUI("⏳ После Sprout: " .. tostring(left) .. " сек", Color3.fromRGB(255, 210, 120))
-        else
-            local liveLeft = math.max(0, math.ceil(MAX_TRACK_TIME - (tick() - startedAt)))
-            updateTrackerUI("🌱 Sprout найден: timeout через " .. tostring(liveLeft) .. " сек", Color3.fromRGB(120, 255, 120))
+
+            if elapsed > WAIT_AFTER_SPROUT_DESPAWN then
+                break
+            end
+        elseif lastHP then
+            local liveLeft = math.max(0, math.ceil(MAX_HP_STUCK_TIME - (tick() - lastHPChangeAt)))
+            updateTrackerUI("🌱 Sprout HP: " .. tostring(lastHP) .. " | без изменений " .. tostring(liveLeft) .. " сек", Color3.fromRGB(120, 255, 120))
         end
 
-        task.wait()
+        task.wait(0.2)
     end
 
+    currentSproutHP = nil
+    updateHPUI()
     targetSprout = nil
     farmedAt = nil
     disconnectSproutConn()
@@ -1229,11 +1364,17 @@ local function waitForViciousDespawn()
     updateTrackerUI("🐝 Vicious найден: отслеживаю исчезновение...", Color3.fromRGB(255, 160, 120))
 
     local startedAt = tick()
+    local lastHP = getViciousHP(targetVicious)
+    currentViciousHP = lastHP
+    updateHPUI()
+    local lastHPChangeAt = tick()
 
     while true do
         if (tick() - startedAt) >= MAX_TRACK_TIME then
             log("VICIOUS timeout reached, hopping next")
             updateTrackerUI("⚠️ Vicious timeout: переход дальше", Color3.fromRGB(255, 170, 90))
+            currentViciousHP = nil
+            updateHPUI()
             targetVicious = nil
             viciousGoneAt = nil
             disconnectViciousConn()
@@ -1241,19 +1382,42 @@ local function waitForViciousDespawn()
         end
 
         if not isAliveVicious(targetVicious) then
-            targetVicious = nil
             if not viciousGoneAt then
                 viciousGoneAt = tick()
             end
+            currentViciousHP = nil
+            updateHPUI()
             break
         else
-            local liveLeft = math.max(0, math.ceil(MAX_TRACK_TIME - (tick() - startedAt)))
-            updateTrackerUI("🐝 Vicious найден: timeout через " .. tostring(liveLeft) .. " сек", Color3.fromRGB(255, 160, 120))
+            local hp = getViciousHP(targetVicious)
+            currentViciousHP = hp
+            updateHPUI()
+
+            if hp and hp ~= lastHP then
+                lastHP = hp
+                lastHPChangeAt = tick()
+            end
+
+            if (tick() - lastHPChangeAt) >= MAX_HP_STUCK_TIME then
+                log("VICIOUS hp stuck reached, hopping next")
+                updateTrackerUI("⚠️ Vicious HP не меняется 30 сек", Color3.fromRGB(255, 170, 90))
+                currentViciousHP = nil
+                updateHPUI()
+                targetVicious = nil
+                viciousGoneAt = nil
+                disconnectViciousConn()
+                return "hp_stuck"
+            end
+
+            local liveLeft = math.max(0, math.ceil(MAX_HP_STUCK_TIME - (tick() - lastHPChangeAt)))
+            updateTrackerUI("🐝 Vicious HP: " .. tostring(hp or "-") .. " | без изменений " .. tostring(liveLeft) .. " сек", Color3.fromRGB(255, 160, 120))
         end
 
         task.wait(0.2)
     end
 
+    currentViciousHP = nil
+    updateHPUI()
     targetVicious = nil
     viciousGoneAt = nil
     disconnectViciousConn()
@@ -1275,6 +1439,10 @@ local function invalidateCurrentServer()
     targetVicious = nil
     viciousGoneAt = nil
     disconnectViciousConn()
+
+    currentSproutHP = nil
+    currentViciousHP = nil
+    updateHPUI()
 
     ENV.BSS_CURRENT_SERVER_TYPE = nil
     ENV.BSS_CURRENT_SERVER_RARITY = nil
@@ -1355,6 +1523,10 @@ local function teleportToServer(best)
     viciousGoneAt = nil
     disconnectViciousConn()
 
+    currentSproutHP = nil
+    currentViciousHP = nil
+    updateHPUI()
+
     local okTeleport, teleportError = pcall(function()
         TeleportService:TeleportToPlaceInstance(placeId, best.jobId, LocalPlayer)
     end)
@@ -1390,7 +1562,7 @@ local function processCurrentSproutServer(servers)
         updateTrackerUI("✅ На сервере есть реальный Sprout", Color3.fromRGB(100, 255, 100))
         local result = waitForSproutDespawn()
 
-        if result == "timeout" then
+        if result == "timeout" or result == "hp_stuck" then
             invalidateCurrentServer()
             task.wait(0.2)
             if servers and #servers > 0 then
@@ -1426,7 +1598,7 @@ local function processCurrentViciousServer(servers)
         updateTrackerUI("✅ На сервере есть Vicious", Color3.fromRGB(255, 160, 120))
         local result = waitForViciousDespawn()
 
-        if result == "timeout" then
+        if result == "timeout" or result == "hp_stuck" then
             invalidateCurrentServer()
             task.wait(0.2)
             if servers and #servers > 0 then
@@ -1484,12 +1656,11 @@ end
 
 markCurrentServer()
 refreshSettingsList()
+updateHPUI()
 
-log("=== AutoHop Sprout + Vicious FIXED ===")
-log("Vicious checks alive state, not only AncestryChanged")
-log("Sprout / Vicious timeout = 60 sec")
-log("Vicious after despawn -> immediate hop")
-log("Gifted Vicious cooldown = 55 sec")
+log("=== AutoHop HP Watch ===")
+log("If Sprout/Vicious HP does not change for 30 sec -> hop next server")
+log("HP values are shown in menu")
 
 while true do
     task.wait(CHECK_DELAY)
@@ -1518,6 +1689,9 @@ while true do
         continue
     end
 
+    currentSproutHP = nil
+    currentViciousHP = nil
+    updateHPUI()
     updateTrackerUI("Tracker: idle", Color3.fromRGB(150, 150, 160))
 
     local best = pickBestServer(servers)
