@@ -50,6 +50,10 @@ local pendingTeleport = nil
 local isProcessingSprout = false
 local worldReadyAt = tick() + WORLD_LOAD_DELAY
 
+local targetSprout = nil
+local farmedAt = nil
+local sproutConn = nil
+
 local function safeDestroyGui()
     local old = CoreGui:FindFirstChild("BSS_UI")
     if old then
@@ -136,7 +140,7 @@ local function getCooldownForServer(server)
     elseif isSprout(server) and server.rarity == "Legendary" then
         return 55
     elseif isVicious(server) and server.gifted == true then
-        return 45
+        return 55
     elseif isVicious(server) then
         return 40
     end
@@ -838,6 +842,13 @@ local function updateTopInfo(best, force, joinedAgo, cooldown)
     end
 end
 
+local function disconnectSproutConn()
+    if sproutConn then
+        sproutConn:Disconnect()
+        sproutConn = nil
+    end
+end
+
 local function findSproutModel()
     local sproutsFolder = workspace:FindFirstChild("Sprouts")
     if sproutsFolder then
@@ -867,23 +878,59 @@ local function findSproutModel()
     return nil
 end
 
+local function bindTargetSprout()
+    disconnectSproutConn()
+    targetSprout = findSproutModel()
+    farmedAt = nil
+
+    if targetSprout then
+        sproutConn = targetSprout.AncestryChanged:Connect(function(_, parent)
+            if parent == nil and not farmedAt then
+                farmedAt = tick()
+                disconnectSproutConn()
+            end
+        end)
+        return true
+    end
+
+    return false
+end
+
 local function hasRealSprout()
-    return findSproutModel() ~= nil
+    if targetSprout and targetSprout.Parent ~= nil then
+        return true
+    end
+
+    targetSprout = nil
+    return bindTargetSprout()
 end
 
 local function waitForSproutDespawn()
-    print("[SPROUT] Real Sprout found, waiting for despawn...")
-    updateSproutStatusUI("🌱 Росток найден: ожидание исчезновения...", Color3.fromRGB(120, 255, 120))
+    print("[SPROUT] Real Sprout found, tracking AncestryChanged...")
+    updateSproutStatusUI("🌱 Росток найден: отслеживаю исчезновение...", Color3.fromRGB(120, 255, 120))
 
-    while hasRealSprout() do
-        task.wait(1)
+    while true do
+        if not targetSprout or targetSprout.Parent == nil then
+            targetSprout = nil
+            if farmedAt and (tick() - farmedAt) > WAIT_AFTER_SPROUT_DESPAWN then
+                break
+            end
+        else
+            -- здесь можно выполнять фарм, пока росток существует
+        end
+
+        if farmedAt then
+            local elapsed = tick() - farmedAt
+            local left = math.max(0, math.ceil(WAIT_AFTER_SPROUT_DESPAWN - elapsed))
+            updateSproutStatusUI("⏳ После исчезновения: " .. tostring(left) .. " сек", Color3.fromRGB(255, 210, 120))
+        end
+
+        task.wait()
     end
 
-    print("[SPROUT] Sprout disappeared, waiting", WAIT_AFTER_SPROUT_DESPAWN, "sec")
-    for i = WAIT_AFTER_SPROUT_DESPAWN, 1, -1 do
-        updateSproutStatusUI("⏳ Переход через " .. tostring(i) .. " сек", Color3.fromRGB(255, 210, 120))
-        task.wait(1)
-    end
+    targetSprout = nil
+    farmedAt = nil
+    disconnectSproutConn()
 end
 
 local function invalidateCurrentServer()
@@ -893,6 +940,10 @@ local function invalidateCurrentServer()
         pushRecent(currentJobId)
         getgenv().BSS_IGNORE_CURRENT_JOB_ID = currentJobId
     end
+
+    targetSprout = nil
+    farmedAt = nil
+    disconnectSproutConn()
 
     getgenv().BSS_CURRENT_SERVER_TYPE = nil
     getgenv().BSS_CURRENT_SERVER_RARITY = nil
@@ -946,6 +997,9 @@ local function teleportToServer(best)
     getgenv().BSS_NEXT_TELEPORT_COOLDOWN = getCooldownForServer(best)
     getgenv().BSS_SERVER_JOIN_TIME = tick()
     getgenv().BSS_IGNORE_CURRENT_JOB_ID = nil
+    targetSprout = nil
+    farmedAt = nil
+    disconnectSproutConn()
 
     local okTeleport, teleportError = pcall(function()
         TeleportService:TeleportToPlaceInstance(placeId, best.jobId, LocalPlayer)
@@ -999,8 +1053,8 @@ local function processCurrentSproutServer(servers)
 
     isProcessingSprout = true
 
-    if hasRealSprout() then
-        print("[SPROUT] Real Sprout confirmed on server.")
+    if bindTargetSprout() then
+        print("[SPROUT] Real Sprout confirmed on server. Tracking targetSprout.")
         updateSproutStatusUI("✅ На сервере есть реальный Sprout", Color3.fromRGB(100, 255, 100))
         waitForSproutDespawn()
         updateSproutStatusUI("➡️ Переход на следующий сервер...", Color3.fromRGB(100, 255, 100))
@@ -1060,9 +1114,10 @@ end
 
 markCurrentServer()
 
-print("=== AutoHop Sprout Check ===")
-print("Если сервер из API = Sprout, то на сервере должен быть реальный Sprout.")
-print("Поле больше не проверяется.")
+print("=== AutoHop Sprout Check Listener ===")
+print("Используется targetSprout + AncestryChanged для отслеживания исчезновения.")
+print("Gifted Vicious cooldown увеличен до 55 секунд.")
+print("Поле не проверяется.")
 print("checkCurrentSprout() - проверить, есть ли реальный Sprout")
 print("setWaitAfterDespawn(сек) - изменить задержку после исчезновения")
 
