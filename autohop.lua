@@ -5,7 +5,7 @@ local CoreGui = game:GetService("CoreGui")
 local UserInputService = game:GetService("UserInputService")
 
 local LocalPlayer = Players.LocalPlayer
-local ENV = getgenv and getgenv() or _G
+local ENV = getgenv()
 
 local userId = ENV.BSS_USER_ID
 local secretKey = ENV.BSS_SECRET_KEY
