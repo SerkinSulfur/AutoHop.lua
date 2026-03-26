@@ -22,6 +22,7 @@ local MIN_SPROUT_SECONDS = 40
 local MAX_PLAYERS = 4
 local RECENT_LIMIT = 5
 local VISITED_LIMIT = 100
+local WAIT_AFTER_SPROUT_DESPAWN = 25
 
 getgenv().BSS_VISITED_JOB_IDS = getgenv().BSS_VISITED_JOB_IDS or {}
 getgenv().BSS_RECENT_JOB_IDS = getgenv().BSS_RECENT_JOB_IDS or {}
@@ -34,94 +35,80 @@ getgenv().BSS_UI_COLLAPSED = getgenv().BSS_UI_COLLAPSED or false
 getgenv().BSS_CURRENT_SERVER_JOB_ID = getgenv().BSS_CURRENT_SERVER_JOB_ID or game.JobId
 getgenv().BSS_CURRENT_SERVER_FIELD = getgenv().BSS_CURRENT_SERVER_FIELD or nil
 getgenv().BSS_AUTO_FAILOVER = getgenv().BSS_AUTO_FAILOVER or true
-getgenv().BSS_FAILOVER_COOLDOWN = getgenv().BSS_FAILOVER_COOLDOWN or 5
 
 local VISITED = getgenv().BSS_VISITED_JOB_IDS
 local RECENT = getgenv().BSS_RECENT_JOB_IDS
 local pendingTeleport = nil
-local failoverInProgress = false
-local validationStatusLabel = nil
+local isProcessingSprout = false
 
 -- ===================== ФУНКЦИИ ПРОВЕРКИ SPROUT =====================
 
-local function waitForSprout(timeout)
-    timeout = timeout or 10
-    local startTime = tick()
-    
-    while tick() - startTime < timeout do
-        -- Проверяем наличие Sprout в workspace.Sprouts
-        local sproutsFolder = workspace:FindFirstChild("Sprouts")
-        if sproutsFolder then
-            local sprout = sproutsFolder:FindFirstChild("Sprout")
-            if sprout and sprout:IsA("Model") then
-                return true, sprout
-            end
-        end
-        
-        -- Альтернативная проверка (некоторые сервера используют другое расположение)
-        local sprout = workspace:FindFirstChild("Sprout")
+local function checkSproutExists()
+    -- Проверяем наличие Sprout в workspace.Sprouts
+    local sproutsFolder = workspace:FindFirstChild("Sprouts")
+    if sproutsFolder then
+        local sprout = sproutsFolder:FindFirstChild("Sprout")
         if sprout and sprout:IsA("Model") then
-            return true, sprout
+            return true
         end
-        
-        task.wait(0.5)
     end
     
-    return false, nil
+    -- Альтернативная проверка
+    local sprout = workspace:FindFirstChild("Sprout")
+    if sprout and sprout:IsA("Model") then
+        return true
+    end
+    
+    return false
 end
 
-local function waitForServerValidation()
-    local validationTimeout = 15
-    local startTime = tick()
+local function waitForSproutDespawn()
+    print("[SPROUT] Sprout найден! Ожидаем его исчезновения...")
     
-    while tick() - startTime < validationTimeout do
-        local currentType = getgenv().BSS_CURRENT_SERVER_TYPE
-        
-        -- Если это Sprout, проверяем наличие Sprout в мире
-        if currentType == "Sprout" then
-            local hasSprout, sproutObj = waitForSprout(5)
-            
-            if hasSprout then
-                print("[VALIDATION] ✓ Sprout найден в мире")
-                return true, "sprout_found"
-            else
-                print("[VALIDATION] ✗ Sprout НЕ НАЙДЕН! Сервер невалидный")
-                return false, "no_sprout"
-            end
-        end
-        
-        -- Если не Sprout (Vicious и т.д.), считаем сервер валидным
-        if currentType and currentType ~= "" and currentType ~= "Sprout" then
-            print("[VALIDATION] ✓ Сервер типа", currentType, "принят без проверки")
-            return true, currentType
-        end
-        
-        -- Если тип еще не определился, ждем
-        if tick() - startTime > 3 then
-            print("[VALIDATION] Не удалось определить тип сервера")
-            return false, "unknown_type"
-        end
-        
+    -- Ждем пока Sprout исчезнет
+    while checkSproutExists() do
+        task.wait(1)
+        print("[SPROUT] Sprout все еще существует, ждем...")
+    end
+    
+    print("[SPROUT] Sprout исчез!")
+    
+    -- Ждем 25 секунд после исчезновения
+    print("[SPROUT] Ожидание", WAIT_AFTER_SPROUT_DESPAWN, "секунд перед переходом...")
+    
+    for i = WAIT_AFTER_SPROUT_DESPAWN, 1, -1 do
+        print("[SPROUT] Переход через", i, "секунд...")
         task.wait(1)
     end
     
-    return false, "timeout"
+    print("[SPROUT] Ожидание завершено, переходим на следующий сервер")
 end
 
-local function findNextServerAfterFailed()
-    if failoverInProgress then
-        return
-    end
+local function handleSproutServer()
+    -- Проверяем наличие Sprout на сервере
+    local hasSprout = checkSproutExists()
     
-    failoverInProgress = true
-    print("[AUTO-FAILOVER] Поиск следующего сервера...")
+    if not hasSprout then
+        -- Sprout нет, сразу идем на следующий сервер
+        print("[SPROUT] Sprout НЕ НАЙДЕН на сервере! Переходим на следующий сервер...")
+        return "no_sprout"
+    else
+        -- Sprout есть, ждем его исчезновения + 25 секунд
+        print("[SPROUT] Sprout найден! Начинаем ожидание...")
+        waitForSproutDespawn()
+        return "sprout_completed"
+    end
+end
+
+local function findNextServerAfterCurrent()
+    print("[NEXT] Поиск следующего сервера...")
     
     -- Блокируем текущий сервер
     local currentJobId = game.JobId
     if currentJobId then
         VISITED[currentJobId] = true
         pushRecent(currentJobId)
-        print("[FAILOVER] Сервер", currentJobId, "заблокирован")
+        print("[NEXT] Сервер", currentJobId, "заблокирован")
     end
     
     -- Очищаем текущее состояние
@@ -134,12 +121,11 @@ local function findNextServerAfterFailed()
     getgenv().BSS_NEXT_TELEPORT_COOLDOWN = 0
     getgenv().BSS_SERVER_JOIN_TIME = tick() - 60
     
-    -- Ждем перед следующим телепортом
-    task.wait(getgenv().BSS_FAILOVER_COOLDOWN)
-    failoverInProgress = false
+    -- Небольшая задержка
+    task.wait(2)
 end
 
--- ===================== ОСТАЛЬНЫЕ ФУНКЦИИ (БЕЗ ИЗМЕНЕНИЙ) =====================
+-- ===================== ОСТАЛЬНЫЕ ФУНКЦИИ =====================
 
 local function safeDestroyGui()
     local old = CoreGui:FindFirstChild("BSS_UI")
@@ -614,16 +600,16 @@ cooldownLabel.TextColor3 = Color3.fromRGB(190, 190, 200)
 cooldownLabel.TextXAlignment = Enum.TextXAlignment.Left
 cooldownLabel.Text = "Cooldown: 0s"
 
-local validationStatus = Instance.new("TextLabel")
-validationStatus.Parent = frame
-validationStatus.BackgroundTransparency = 1
-validationStatus.Position = UDim2.new(0, 14, 0, 98)
-validationStatus.Size = UDim2.new(1, -28, 0, 20)
-validationStatus.Font = Enum.Font.Gotham
-validationStatus.TextSize = 12
-validationStatus.TextColor3 = Color3.fromRGB(150, 150, 160)
-validationStatus.TextXAlignment = Enum.TextXAlignment.Left
-validationStatus.Text = "Sprout check: waiting..."
+local sproutStatusLabel = Instance.new("TextLabel")
+sproutStatusLabel.Parent = frame
+sproutStatusLabel.BackgroundTransparency = 1
+sproutStatusLabel.Position = UDim2.new(0, 14, 0, 98)
+sproutStatusLabel.Size = UDim2.new(1, -28, 0, 20)
+sproutStatusLabel.Font = Enum.Font.Gotham
+sproutStatusLabel.TextSize = 12
+sproutStatusLabel.TextColor3 = Color3.fromRGB(150, 150, 160)
+sproutStatusLabel.TextXAlignment = Enum.TextXAlignment.Left
+sproutStatusLabel.Text = "Sprout: waiting..."
 
 local targetLabel = Instance.new("TextLabel")
 targetLabel.Parent = frame
@@ -687,7 +673,7 @@ local function setCollapsed(collapsed)
 
     statusLabel.Visible = not collapsed
     cooldownLabel.Visible = not collapsed
-    validationStatus.Visible = not collapsed
+    sproutStatusLabel.Visible = not collapsed
     targetLabel.Visible = not collapsed
     listHeader.Visible = not collapsed
     listContainer.Visible = not collapsed
@@ -917,25 +903,11 @@ local function updateTopInfo(best, force, joinedAgo, cooldown)
     end
 end
 
--- ===================== ОБНОВЛЕНИЕ UI СТАТУСА SPROUT =====================
-
-local function updateValidationStatusUI(type, hasSprout)
-    if not validationStatus then return end
-    
-    if type == "Sprout" then
-        if hasSprout then
-            validationStatus.Text = "Sprout check: ✓ Sprout present"
-            validationStatus.TextColor3 = Color3.fromRGB(100, 255, 100)
-        else
-            validationStatus.Text = "Sprout check: ✗ No Sprout found"
-            validationStatus.TextColor3 = Color3.fromRGB(255, 100, 100)
-        end
-    elseif type == "Vicious" then
-        validationStatus.Text = "Sprout check: Vicious server (no check)"
-        validationStatus.TextColor3 = Color3.fromRGB(150, 150, 160)
-    else
-        validationStatus.Text = "Sprout check: waiting..."
-        validationStatus.TextColor3 = Color3.fromRGB(150, 150, 160)
+local function updateSproutStatusUI(text, color)
+    if not sproutStatusLabel then return end
+    sproutStatusLabel.Text = text
+    if color then
+        sproutStatusLabel.TextColor3 = color
     end
 end
 
@@ -972,9 +944,9 @@ markCurrentServer()
 while true do
     task.wait(CHECK_DELAY)
     
-    -- Если идет failover, пропускаем итерацию
-    if failoverInProgress then
-        print("[WAIT] Failover in progress, waiting...")
+    -- Если обрабатываем Sprout, не ищем новые сервера
+    if isProcessingSprout then
+        print("[WAIT] Обработка Sprout в процессе...")
         continue
     end
 
@@ -1054,44 +1026,38 @@ while true do
                 pendingTeleport = nil
             end
         else
-            -- УСПЕШНЫЙ ТЕЛЕПОРТ - ПРОВЕРЯЕМ СЕРВЕР
+            -- УСПЕШНЫЙ ТЕЛЕПОРТ - ПРОВЕРЯЕМ SPROUT
             print("[TELEPORT] Успешно телепортировался на", best.jobId)
             
             -- Ждем загрузки мира
             task.wait(5)
             
-            -- Обновляем UI статус
-            updateValidationStatusUI(getgenv().BSS_CURRENT_SERVER_TYPE, nil)
-            
-            -- Проверяем валидность сервера
-            local isValid, reason = waitForServerValidation()
-            
-            if not isValid and getgenv().BSS_AUTO_FAILOVER then
-                -- Сервер невалидный (Sprout не найден)
-                print("[VALIDATION] Сервер невалидный! Причина:", reason)
-                updateValidationStatusUI(getgenv().BSS_CURRENT_SERVER_TYPE, false)
+            -- Проверяем тип сервера
+            if getgenv().BSS_CURRENT_SERVER_TYPE == "Sprout" then
+                isProcessingSprout = true
+                updateSproutStatusUI("🌱 Sprout сервер: проверка...", Color3.fromRGB(255, 200, 100))
                 
-                -- Запускаем failover
-                findNextServerAfterFailed()
+                -- Запускаем обработку Sprout
+                local result = handleSproutServer()
                 
-                -- Отменяем текущий pendingTeleport
-                if pendingTeleport then
-                    pendingTeleport = nil
-                end
-                
-                -- Продолжаем цикл для поиска нового сервера
-                continue
-            elseif isValid then
-                -- Сервер валидный, обновляем UI
-                print("[VALIDATION] Сервер валидный, продолжаем игру")
-                if getgenv().BSS_CURRENT_SERVER_TYPE == "Sprout" then
-                    updateValidationStatusUI("Sprout", true)
+                if result == "no_sprout" then
+                    updateSproutStatusUI("❌ Sprout не найден! Переход...", Color3.fromRGB(255, 100, 100))
+                    print("[SPROUT] Sprout отсутствует, ищем следующий сервер")
                 else
-                    updateValidationStatusUI(getgenv().BSS_CURRENT_SERVER_TYPE, nil)
+                    updateSproutStatusUI("✅ Sprout завершен! Переход...", Color3.fromRGB(100, 255, 100))
+                    print("[SPROUT] Sprout обработан, переходим на следующий сервер")
                 end
-            elseif not isValid and not getgenv().BSS_AUTO_FAILOVER then
-                print("[VALIDATION] Сервер невалидный, но авто-failover отключен")
-                updateValidationStatusUI(getgenv().BSS_CURRENT_SERVER_TYPE, false)
+                
+                -- Переход на следующий сервер
+                findNextServerAfterCurrent()
+                
+                -- Сбрасываем флаг
+                isProcessingSprout = false
+                updateSproutStatusUI("🌱 Sprout: готов", Color3.fromRGB(150, 150, 160))
+            else
+                -- Vicious сервер, просто ждем
+                updateSproutStatusUI("⚔️ Vicious сервер (ожидание)", Color3.fromRGB(150, 150, 160))
+                print("[VICIOUS] Сервер типа", getgenv().BSS_CURRENT_SERVER_TYPE, "принят")
             end
         end
     else
@@ -1102,15 +1068,9 @@ end
 -- ===================== КОМАНДЫ ДЛЯ КОНСОЛИ =====================
 
 getgenv().checkCurrentSprout = function()
-    local hasSprout, sproutObj = waitForSprout(3)
+    local hasSprout = checkSproutExists()
     if hasSprout then
         print("[MANUAL] ✓ Sprout найден в мире!")
-        print("[MANUAL] Sprout объект:", sproutObj)
-        if sproutObj:IsA("Model") then
-            for _, child in ipairs(sproutObj:GetChildren()) do
-                print("  -", child.Name, child.ClassName)
-            end
-        end
         return true
     else
         print("[MANUAL] ✗ Sprout НЕ НАЙДЕН!")
@@ -1118,20 +1078,21 @@ getgenv().checkCurrentSprout = function()
     end
 end
 
-getgenv().toggleAutoFailover = function()
-    getgenv().BSS_AUTO_FAILOVER = not getgenv().BSS_AUTO_FAILOVER
-    print("[SETTINGS] Auto-failover:", getgenv().BSS_AUTO_FAILOVER and "ON" or "OFF")
-    return getgenv().BSS_AUTO_FAILOVER
+getgenv().setWaitAfterDespawn = function(seconds)
+    seconds = tonumber(seconds) or 25
+    WAIT_AFTER_SPROUT_DESPAWN = math.max(1, math.min(60, seconds))
+    print("[SETTINGS] Wait after Sprout despawn set to", WAIT_AFTER_SPROUT_DESPAWN, "seconds")
+    return WAIT_AFTER_SPROUT_DESPAWN
 end
 
-getgenv().setFailoverDelay = function(delay)
-    delay = tonumber(delay) or 5
-    getgenv().BSS_FAILOVER_COOLDOWN = math.max(1, math.min(30, delay))
-    print("[SETTINGS] Failover delay set to", getgenv().BSS_FAILOVER_COOLDOWN, "seconds")
-end
-
-print("=== AutoHop с проверкой Sprout загружен ===")
-print("Команды:")
-print("  checkCurrentSprout() - проверить наличие Sprout на текущем сервере")
-print("  toggleAutoFailover() - включить/выключить авто-поиск при отсутствии Sprout")
-print("  setFailoverDelay(сек) - установить задержку перед следующим телепортом")
+print("=== AutoHop v4 - Sprout Scanner ===")
+print("")
+print("📌 ЛОГИКА РАБОТЫ:")
+print("  • Заходим на Sprout сервер из API")
+print("  • Если Sprout НЕТ → сразу на следующий сервер")
+print("  • Если Sprout ЕСТЬ → ждем исчезновения + 25 сек → следующий сервер")
+print("  • Vicious сервера пропускаются без проверки")
+print("")
+print("🔧 КОМАНДЫ:")
+print("  checkCurrentSprout() - проверить наличие Sprout")
+print("  setWaitAfterDespawn(сек) - изменить задержку после исчезновения")
