@@ -849,28 +849,41 @@ local function disconnectSproutConn()
     end
 end
 
+local function isSproutInstance(obj)
+    if not obj then
+        return false
+    end
+
+    local lowerName = tostring(obj.Name or ""):lower()
+    if lowerName ~= "sprout" and not lowerName:find("sprout") then
+        return false
+    end
+
+    return obj:IsA("Model") or obj:IsA("BasePart")
+end
+
 local function findSproutModel()
     local sproutsFolder = workspace:FindFirstChild("Sprouts")
     if sproutsFolder then
         local exact = sproutsFolder:FindFirstChild("Sprout")
-        if exact and exact:IsA("Model") then
+        if isSproutInstance(exact) then
             return exact
         end
 
         for _, child in ipairs(sproutsFolder:GetChildren()) do
-            if child:IsA("Model") and child.Name:lower():find("sprout") then
+            if isSproutInstance(child) then
                 return child
             end
         end
     end
 
     local fallback = workspace:FindFirstChild("Sprout")
-    if fallback and fallback:IsA("Model") then
+    if isSproutInstance(fallback) then
         return fallback
     end
 
     for _, child in ipairs(workspace:GetChildren()) do
-        if child:IsA("Model") and child.Name:lower():find("sprout") then
+        if isSproutInstance(child) then
             return child
         end
     end
@@ -897,12 +910,14 @@ local function bindTargetSprout()
 end
 
 local function hasRealSprout()
-    if targetSprout and targetSprout.Parent ~= nil then
+    local sprout = findSproutModel()
+    if sprout and sprout.Parent ~= nil then
+        targetSprout = sprout
         return true
     end
 
     targetSprout = nil
-    return bindTargetSprout()
+    return false
 end
 
 local function waitForSproutDespawn()
@@ -1117,6 +1132,7 @@ markCurrentServer()
 print("=== AutoHop Sprout Check Listener ===")
 print("Используется targetSprout + AncestryChanged для отслеживания исчезновения.")
 print("Gifted Vicious cooldown увеличен до 55 секунд.")
+print("Sprout ищется как Model или BasePart/MeshPart.")
 print("Поле не проверяется.")
 print("checkCurrentSprout() - проверить, есть ли реальный Sprout")
 print("setWaitAfterDespawn(сек) - изменить задержку после исчезновения")
