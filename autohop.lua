@@ -5,9 +5,10 @@ local CoreGui = game:GetService("CoreGui")
 local UserInputService = game:GetService("UserInputService")
 
 local LocalPlayer = Players.LocalPlayer
+local ENV = getgenv()
 
-local userId = getgenv().BSS_USER_ID
-local secretKey = getgenv().BSS_SECRET_KEY
+local userId = ENV.BSS_USER_ID
+local secretKey = ENV.BSS_SECRET_KEY
 
 if not userId or not secretKey then
     warn("[AUTOHOP] Missing BSS_USER_ID or BSS_SECRET_KEY")
@@ -27,32 +28,53 @@ local MIN_SPROUT_SECONDS = 40
 local MAX_PLAYERS = 4
 local RECENT_LIMIT = 5
 local VISITED_LIMIT = 100
-
 local WAIT_AFTER_SPROUT_DESPAWN = 30
 local WORLD_LOAD_DELAY = 5
 
-getgenv().BSS_VISITED_JOB_IDS = getgenv().BSS_VISITED_JOB_IDS or {}
-getgenv().BSS_RECENT_JOB_IDS = getgenv().BSS_RECENT_JOB_IDS or {}
-getgenv().BSS_SERVER_JOIN_TIME = getgenv().BSS_SERVER_JOIN_TIME or tick()
+ENV.BSS_VISITED_JOB_IDS = ENV.BSS_VISITED_JOB_IDS or {}
+ENV.BSS_RECENT_JOB_IDS = ENV.BSS_RECENT_JOB_IDS or {}
+ENV.BSS_SERVER_JOIN_TIME = ENV.BSS_SERVER_JOIN_TIME or tick()
+ENV.BSS_CURRENT_SERVER_TYPE = ENV.BSS_CURRENT_SERVER_TYPE or nil
+ENV.BSS_CURRENT_SERVER_RARITY = ENV.BSS_CURRENT_SERVER_RARITY or nil
+ENV.BSS_CURRENT_SERVER_FIELD = ENV.BSS_CURRENT_SERVER_FIELD or nil
+ENV.BSS_CURRENT_SERVER_JOB_ID = ENV.BSS_CURRENT_SERVER_JOB_ID or game.JobId
+ENV.BSS_NEXT_TELEPORT_COOLDOWN = ENV.BSS_NEXT_TELEPORT_COOLDOWN or TELEPORT_COOLDOWN
+ENV.BSS_UI_COLLAPSED = ENV.BSS_UI_COLLAPSED or false
+ENV.BSS_IGNORE_CURRENT_JOB_ID = ENV.BSS_IGNORE_CURRENT_JOB_ID or nil
+ENV.BSS_ACTIVE_TAB = ENV.BSS_ACTIVE_TAB or "Servers"
+ENV.BSS_PRIORITY_ORDER = ENV.BSS_PRIORITY_ORDER or {
+    "Supreme Sprout",
+    "Legendary Sprout",
+    "Gifted Vicious",
+    "Festive Sprout",
+    "Epic Sprout",
+    "Gummy Sprout",
+    "Rare Sprout",
+    "Vicious",
+}
 
-getgenv().BSS_CURRENT_SERVER_TYPE = getgenv().BSS_CURRENT_SERVER_TYPE or nil
-getgenv().BSS_CURRENT_SERVER_RARITY = getgenv().BSS_CURRENT_SERVER_RARITY or nil
-getgenv().BSS_NEXT_TELEPORT_COOLDOWN = getgenv().BSS_NEXT_TELEPORT_COOLDOWN or TELEPORT_COOLDOWN
-getgenv().BSS_UI_COLLAPSED = getgenv().BSS_UI_COLLAPSED or false
-getgenv().BSS_CURRENT_SERVER_JOB_ID = getgenv().BSS_CURRENT_SERVER_JOB_ID or game.JobId
-getgenv().BSS_CURRENT_SERVER_FIELD = getgenv().BSS_CURRENT_SERVER_FIELD or nil
-getgenv().BSS_IGNORE_CURRENT_JOB_ID = getgenv().BSS_IGNORE_CURRENT_JOB_ID or nil
+local VISITED = ENV.BSS_VISITED_JOB_IDS
+local RECENT = ENV.BSS_RECENT_JOB_IDS
 
-local VISITED = getgenv().BSS_VISITED_JOB_IDS
-local RECENT = getgenv().BSS_RECENT_JOB_IDS
 local pendingTeleport = nil
-
-local isProcessingSprout = false
+local isProcessingSpecial = false
 local worldReadyAt = tick() + WORLD_LOAD_DELAY
 
 local targetSprout = nil
 local farmedAt = nil
 local sproutConn = nil
+
+local targetVicious = nil
+local viciousGoneAt = nil
+local viciousConn = nil
+
+local function log(...)
+    print("[AUTOHOP]", ...)
+end
+
+local function warnf(...)
+    warn("[AUTOHOP]", ...)
+end
 
 local function safeDestroyGui()
     local old = CoreGui:FindFirstChild("BSS_UI")
@@ -110,25 +132,40 @@ local function getRemainingSeconds(server)
     return expiry - os.time()
 end
 
-local function getPriority(server)
+local function getServerLabel(server)
     local rarity = tostring(server.rarity or "")
 
     if isSprout(server) and rarity == "Supreme" then
-        return 100
+        return "Supreme Sprout"
     elseif isSprout(server) and rarity == "Legendary" then
-        return 90
+        return "Legendary Sprout"
     elseif isVicious(server) and server.gifted == true then
-        return 80
+        return "Gifted Vicious"
     elseif isSprout(server) and rarity == "Festive" then
-        return 70
-    elseif isSprout(server) and rarity == "Gummy" then
-        return 60
+        return "Festive Sprout"
     elseif isSprout(server) and rarity == "Epic" then
-        return 50
+        return "Epic Sprout"
+    elseif isSprout(server) and rarity == "Gummy" then
+        return "Gummy Sprout"
     elseif isSprout(server) and rarity == "Rare" then
-        return 40
+        return "Rare Sprout"
     elseif isVicious(server) then
-        return 30
+        return "Vicious"
+    end
+
+    return nil
+end
+
+local function getPriority(server)
+    local label = getServerLabel(server)
+    if not label then
+        return 0
+    end
+
+    for index, value in ipairs(ENV.BSS_PRIORITY_ORDER) do
+        if value == label then
+            return 100 - index
+        end
     end
 
     return 0
@@ -149,7 +186,7 @@ local function getCooldownForServer(server)
 end
 
 local function hasKnownCurrentServer()
-    local currentType = getgenv().BSS_CURRENT_SERVER_TYPE
+    local currentType = ENV.BSS_CURRENT_SERVER_TYPE
     if currentType == nil then
         return false
     end
@@ -159,7 +196,7 @@ local function hasKnownCurrentServer()
 end
 
 local function hydrateCurrentServerFromList(servers)
-    local ignoredJobId = getgenv().BSS_IGNORE_CURRENT_JOB_ID
+    local ignoredJobId = ENV.BSS_IGNORE_CURRENT_JOB_ID
     if ignoredJobId and ignoredJobId == game.JobId then
         return false
     end
@@ -171,14 +208,14 @@ local function hydrateCurrentServerFromList(servers)
     for _, server in ipairs(servers) do
         if server.jobId == game.JobId then
             if isVicious(server) and server.gifted == true then
-                getgenv().BSS_CURRENT_SERVER_RARITY = "Gifted"
+                ENV.BSS_CURRENT_SERVER_RARITY = "Gifted"
             else
-                getgenv().BSS_CURRENT_SERVER_RARITY = server.rarity
+                ENV.BSS_CURRENT_SERVER_RARITY = server.rarity
             end
 
-            getgenv().BSS_CURRENT_SERVER_TYPE = server.type
-            getgenv().BSS_CURRENT_SERVER_FIELD = server.field
-            getgenv().BSS_CURRENT_SERVER_JOB_ID = server.jobId
+            ENV.BSS_CURRENT_SERVER_TYPE = server.type
+            ENV.BSS_CURRENT_SERVER_FIELD = server.field
+            ENV.BSS_CURRENT_SERVER_JOB_ID = server.jobId
             return true
         end
     end
@@ -191,8 +228,8 @@ local function shouldForceTeleport(best)
         return false
     end
 
-    local currentType = getgenv().BSS_CURRENT_SERVER_TYPE
-    local currentRarity = getgenv().BSS_CURRENT_SERVER_RARITY
+    local currentType = ENV.BSS_CURRENT_SERVER_TYPE
+    local currentRarity = ENV.BSS_CURRENT_SERVER_RARITY
 
     local isCurrentLow =
         (currentType == "Sprout" and (currentRarity == "Rare" or currentRarity == "Epic")) or
@@ -286,7 +323,7 @@ local function markCurrentServer()
     if currentJobId and currentJobId ~= "" then
         addVisited(currentJobId)
         pushRecent(currentJobId)
-        getgenv().BSS_CURRENT_SERVER_JOB_ID = currentJobId
+        ENV.BSS_CURRENT_SERVER_JOB_ID = currentJobId
     end
 end
 
@@ -318,11 +355,9 @@ local function isValidServer(server)
 
     if isSprout(server) then
         local remaining = getRemainingSeconds(server)
-
         if remaining <= 0 then
             return false
         end
-
         if remaining < MIN_SPROUT_SECONDS then
             return false
         end
@@ -338,19 +373,17 @@ local function fetchValidated()
         return request({
             Url = url,
             Method = "GET",
-            Headers = {
-                ["secret-key"] = secretKey
-            }
+            Headers = {["secret-key"] = secretKey}
         })
     end)
 
     if not okRequest then
-        warn("[AUTOHOP] API request failed")
+        warnf("API request failed")
         return {}
     end
 
     if not res or res.StatusCode ~= 200 then
-        warn("[AUTOHOP] API error:", res and res.Body or "no response")
+        warnf("API error:", res and res.Body or "no response")
         return {}
     end
 
@@ -359,7 +392,7 @@ local function fetchValidated()
     end)
 
     if not ok or not data then
-        warn("[AUTOHOP] JSON decode error")
+        warnf("JSON decode error")
         return {}
     end
 
@@ -387,7 +420,6 @@ local function isBetterServer(candidate, best)
     if isSprout(candidate) and isSprout(best) then
         local cr = getRemainingSeconds(candidate)
         local br = getRemainingSeconds(best)
-
         if cr < br then
             return true
         elseif cr > br then
@@ -398,7 +430,6 @@ local function isBetterServer(candidate, best)
     if isVicious(candidate) and isVicious(best) then
         local cl = tonumber(candidate.level) or 0
         local bl = tonumber(best.level) or 0
-
         if cl > bl then
             return true
         elseif cl < bl then
@@ -408,27 +439,21 @@ local function isBetterServer(candidate, best)
 
     local cPlayers = tonumber(candidate.playerCount) or 999
     local bPlayers = tonumber(best.playerCount) or 999
-
     return cPlayers < bPlayers
 end
 
 local function pickBestServer(servers)
     local best = nil
-
     for _, server in ipairs(servers) do
-        if isValidServer(server) then
-            if isBetterServer(server, best) then
-                best = server
-            end
+        if isValidServer(server) and isBetterServer(server, best) then
+            best = server
         end
     end
-
     return best
 end
 
 local function sortServersForUi(servers)
     local copy = {}
-
     for _, server in ipairs(servers) do
         if isValidServer(server) then
             table.insert(copy, server)
@@ -452,8 +477,8 @@ gui.Parent = CoreGui
 
 local frame = Instance.new("Frame")
 frame.Parent = gui
-frame.Size = UDim2.new(0, 360, 0, getgenv().BSS_UI_COLLAPSED and 44 or 470)
-frame.Position = UDim2.new(1, -375, 0.5, getgenv().BSS_UI_COLLAPSED and -22 or -235)
+frame.Size = UDim2.new(0, 380, 0, ENV.BSS_UI_COLLAPSED and 44 or 510)
+frame.Position = UDim2.new(1, -395, 0.5, ENV.BSS_UI_COLLAPSED and -22 or -255)
 frame.BackgroundColor3 = Color3.fromRGB(18, 18, 22)
 frame.BorderSizePixel = 0
 
@@ -492,7 +517,7 @@ title.Font = Enum.Font.GothamBold
 title.TextSize = 16
 title.TextColor3 = Color3.fromRGB(255, 255, 255)
 title.TextXAlignment = Enum.TextXAlignment.Left
-title.Text = "AutoHop Sprout Check"
+title.Text = "AutoHop"
 
 local collapseButton = Instance.new("TextButton")
 collapseButton.Parent = header
@@ -503,7 +528,7 @@ collapseButton.BorderSizePixel = 0
 collapseButton.Font = Enum.Font.GothamBold
 collapseButton.TextSize = 16
 collapseButton.TextColor3 = Color3.fromRGB(230, 230, 235)
-collapseButton.Text = getgenv().BSS_UI_COLLAPSED and "+" or "—"
+collapseButton.Text = ENV.BSS_UI_COLLAPSED and "+" or "—"
 
 local collapseCorner = Instance.new("UICorner")
 collapseCorner.CornerRadius = UDim.new(0, 6)
@@ -531,23 +556,23 @@ cooldownLabel.TextColor3 = Color3.fromRGB(190, 190, 200)
 cooldownLabel.TextXAlignment = Enum.TextXAlignment.Left
 cooldownLabel.Text = "Cooldown: 0s"
 
-local sproutStatusLabel = Instance.new("TextLabel")
-sproutStatusLabel.Parent = frame
-sproutStatusLabel.BackgroundTransparency = 1
-sproutStatusLabel.Position = UDim2.new(0, 14, 0, 98)
-sproutStatusLabel.Size = UDim2.new(1, -28, 0, 40)
-sproutStatusLabel.Font = Enum.Font.Gotham
-sproutStatusLabel.TextSize = 13
-sproutStatusLabel.TextColor3 = Color3.fromRGB(150, 150, 160)
-sproutStatusLabel.TextXAlignment = Enum.TextXAlignment.Left
-sproutStatusLabel.TextWrapped = true
-sproutStatusLabel.Text = "🌱 Sprout: idle"
+local trackerLabel = Instance.new("TextLabel")
+trackerLabel.Parent = frame
+trackerLabel.BackgroundTransparency = 1
+trackerLabel.Position = UDim2.new(0, 14, 0, 98)
+trackerLabel.Size = UDim2.new(1, -28, 0, 42)
+trackerLabel.Font = Enum.Font.Gotham
+trackerLabel.TextSize = 13
+trackerLabel.TextColor3 = Color3.fromRGB(150, 150, 160)
+trackerLabel.TextXAlignment = Enum.TextXAlignment.Left
+trackerLabel.TextWrapped = true
+trackerLabel.Text = "Tracker: idle"
 
 local targetLabel = Instance.new("TextLabel")
 targetLabel.Parent = frame
 targetLabel.BackgroundTransparency = 1
 targetLabel.Position = UDim2.new(0, 14, 0, 142)
-targetLabel.Size = UDim2.new(1, -28, 0, 54)
+targetLabel.Size = UDim2.new(1, -28, 0, 56)
 targetLabel.Font = Enum.Font.Gotham
 targetLabel.TextSize = 13
 targetLabel.TextColor3 = Color3.fromRGB(220, 220, 230)
@@ -557,67 +582,147 @@ targetLabel.TextWrapped = true
 targetLabel.RichText = true
 targetLabel.Text = "Current: none"
 
-local listHeader = Instance.new("TextLabel")
-listHeader.Parent = frame
-listHeader.BackgroundTransparency = 1
-listHeader.Position = UDim2.new(0, 14, 0, 202)
-listHeader.Size = UDim2.new(1, -28, 0, 20)
-listHeader.Font = Enum.Font.GothamBold
-listHeader.TextSize = 13
-listHeader.TextColor3 = Color3.fromRGB(255, 255, 255)
-listHeader.TextXAlignment = Enum.TextXAlignment.Left
-listHeader.Text = "Servers"
+local tabBar = Instance.new("Frame")
+tabBar.Parent = frame
+tabBar.Position = UDim2.new(0, 12, 0, 202)
+tabBar.Size = UDim2.new(1, -24, 0, 34)
+tabBar.BackgroundTransparency = 1
 
-local listContainer = Instance.new("Frame")
-listContainer.Parent = frame
-listContainer.Position = UDim2.new(0, 12, 0, 228)
-listContainer.Size = UDim2.new(1, -24, 1, -240)
-listContainer.BackgroundColor3 = Color3.fromRGB(23, 23, 28)
-listContainer.BorderSizePixel = 0
+local serversTabButton = Instance.new("TextButton")
+serversTabButton.Parent = tabBar
+serversTabButton.Size = UDim2.new(0.5, -4, 1, 0)
+serversTabButton.Position = UDim2.new(0, 0, 0, 0)
+serversTabButton.BackgroundColor3 = Color3.fromRGB(35, 35, 42)
+serversTabButton.BorderSizePixel = 0
+serversTabButton.Font = Enum.Font.GothamBold
+serversTabButton.TextSize = 13
+serversTabButton.TextColor3 = Color3.fromRGB(235, 235, 240)
+serversTabButton.Text = "Servers"
 
-local listCorner = Instance.new("UICorner")
-listCorner.CornerRadius = UDim.new(0, 8)
-listCorner.Parent = listContainer
+local settingsTabButton = Instance.new("TextButton")
+settingsTabButton.Parent = tabBar
+settingsTabButton.Size = UDim2.new(0.5, -4, 1, 0)
+settingsTabButton.Position = UDim2.new(0.5, 4, 0, 0)
+settingsTabButton.BackgroundColor3 = Color3.fromRGB(35, 35, 42)
+settingsTabButton.BorderSizePixel = 0
+settingsTabButton.Font = Enum.Font.GothamBold
+settingsTabButton.TextSize = 13
+settingsTabButton.TextColor3 = Color3.fromRGB(235, 235, 240)
+settingsTabButton.Text = "Settings"
 
-local listStroke = Instance.new("UIStroke")
-listStroke.Color = Color3.fromRGB(40, 40, 50)
-listStroke.Thickness = 1
-listStroke.Parent = listContainer
+for _, button in ipairs({serversTabButton, settingsTabButton}) do
+    local c = Instance.new("UICorner")
+    c.CornerRadius = UDim.new(0, 8)
+    c.Parent = button
+end
 
-local scrolling = Instance.new("ScrollingFrame")
-scrolling.Parent = listContainer
-scrolling.BackgroundTransparency = 1
-scrolling.BorderSizePixel = 0
-scrolling.Position = UDim2.new(0, 8, 0, 8)
-scrolling.Size = UDim2.new(1, -16, 1, -16)
-scrolling.CanvasSize = UDim2.new(0, 0, 0, 0)
-scrolling.ScrollBarThickness = 4
-scrolling.AutomaticCanvasSize = Enum.AutomaticSize.None
+local contentHolder = Instance.new("Frame")
+contentHolder.Parent = frame
+contentHolder.Position = UDim2.new(0, 12, 0, 242)
+contentHolder.Size = UDim2.new(1, -24, 1, -254)
+contentHolder.BackgroundColor3 = Color3.fromRGB(23, 23, 28)
+contentHolder.BorderSizePixel = 0
 
-local layout = Instance.new("UIListLayout")
-layout.Parent = scrolling
-layout.Padding = UDim.new(0, 6)
-layout.SortOrder = Enum.SortOrder.LayoutOrder
+local contentCorner = Instance.new("UICorner")
+contentCorner.CornerRadius = UDim.new(0, 8)
+contentCorner.Parent = contentHolder
+
+local contentStroke = Instance.new("UIStroke")
+contentStroke.Color = Color3.fromRGB(40, 40, 50)
+contentStroke.Thickness = 1
+contentStroke.Parent = contentHolder
+
+local serversPage = Instance.new("Frame")
+serversPage.Parent = contentHolder
+serversPage.BackgroundTransparency = 1
+serversPage.Size = UDim2.new(1, 0, 1, 0)
+
+local settingsPage = Instance.new("Frame")
+settingsPage.Parent = contentHolder
+settingsPage.BackgroundTransparency = 1
+settingsPage.Size = UDim2.new(1, 0, 1, 0)
+
+local serversScroll = Instance.new("ScrollingFrame")
+serversScroll.Parent = serversPage
+serversScroll.BackgroundTransparency = 1
+serversScroll.BorderSizePixel = 0
+serversScroll.Position = UDim2.new(0, 8, 0, 8)
+serversScroll.Size = UDim2.new(1, -16, 1, -16)
+serversScroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+serversScroll.ScrollBarThickness = 4
+serversScroll.AutomaticCanvasSize = Enum.AutomaticSize.None
+
+local serversLayout = Instance.new("UIListLayout")
+serversLayout.Parent = serversScroll
+serversLayout.Padding = UDim.new(0, 6)
+serversLayout.SortOrder = Enum.SortOrder.LayoutOrder
+
+local settingsInfo = Instance.new("TextLabel")
+settingsInfo.Parent = settingsPage
+settingsInfo.BackgroundTransparency = 1
+settingsInfo.Position = UDim2.new(0, 8, 0, 8)
+settingsInfo.Size = UDim2.new(1, -16, 0, 40)
+settingsInfo.Font = Enum.Font.Gotham
+settingsInfo.TextSize = 12
+settingsInfo.TextColor3 = Color3.fromRGB(180, 180, 190)
+settingsInfo.TextXAlignment = Enum.TextXAlignment.Left
+settingsInfo.TextWrapped = true
+settingsInfo.Text = "Меняй порядок кнопками ▲ и ▼. 1 = самый высокий приоритет."
+
+local settingsScroll = Instance.new("ScrollingFrame")
+settingsScroll.Parent = settingsPage
+settingsScroll.BackgroundTransparency = 1
+settingsScroll.BorderSizePixel = 0
+settingsScroll.Position = UDim2.new(0, 8, 0, 52)
+settingsScroll.Size = UDim2.new(1, -16, 1, -60)
+settingsScroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+settingsScroll.ScrollBarThickness = 4
+settingsScroll.AutomaticCanvasSize = Enum.AutomaticSize.None
+
+local settingsLayout = Instance.new("UIListLayout")
+settingsLayout.Parent = settingsScroll
+settingsLayout.Padding = UDim.new(0, 6)
+settingsLayout.SortOrder = Enum.SortOrder.LayoutOrder
 
 local function setCollapsed(collapsed)
-    getgenv().BSS_UI_COLLAPSED = collapsed
+    ENV.BSS_UI_COLLAPSED = collapsed
     collapseButton.Text = collapsed and "+" or "—"
 
     statusLabel.Visible = not collapsed
     cooldownLabel.Visible = not collapsed
-    sproutStatusLabel.Visible = not collapsed
+    trackerLabel.Visible = not collapsed
     targetLabel.Visible = not collapsed
-    listHeader.Visible = not collapsed
-    listContainer.Visible = not collapsed
+    tabBar.Visible = not collapsed
+    contentHolder.Visible = not collapsed
 
-    frame.Size = UDim2.new(0, 360, 0, collapsed and 44 or 470)
+    frame.Size = UDim2.new(0, 380, 0, collapsed and 44 or 510)
+end
+
+local function setActiveTab(tabName)
+    ENV.BSS_ACTIVE_TAB = tabName
+
+    local isServers = tabName == "Servers"
+    serversPage.Visible = isServers
+    settingsPage.Visible = not isServers
+
+    serversTabButton.BackgroundColor3 = isServers and Color3.fromRGB(58, 87, 67) or Color3.fromRGB(35, 35, 42)
+    settingsTabButton.BackgroundColor3 = not isServers and Color3.fromRGB(58, 87, 67) or Color3.fromRGB(35, 35, 42)
 end
 
 collapseButton.MouseButton1Click:Connect(function()
-    setCollapsed(not getgenv().BSS_UI_COLLAPSED)
+    setCollapsed(not ENV.BSS_UI_COLLAPSED)
 end)
 
-setCollapsed(getgenv().BSS_UI_COLLAPSED)
+serversTabButton.MouseButton1Click:Connect(function()
+    setActiveTab("Servers")
+end)
+
+settingsTabButton.MouseButton1Click:Connect(function()
+    setActiveTab("Settings")
+end)
+
+setCollapsed(ENV.BSS_UI_COLLAPSED)
+setActiveTab(ENV.BSS_ACTIVE_TAB)
 
 local dragging = false
 local dragStart
@@ -649,15 +754,15 @@ UserInputService.InputChanged:Connect(function(input)
     end
 end)
 
-local function updateSproutStatusUI(text, color)
-    sproutStatusLabel.Text = text
+local function updateTrackerUI(text, color)
+    trackerLabel.Text = text
     if color then
-        sproutStatusLabel.TextColor3 = color
+        trackerLabel.TextColor3 = color
     end
 end
 
 local function clearServerList()
-    for _, child in ipairs(scrolling:GetChildren()) do
+    for _, child in ipairs(serversScroll:GetChildren()) do
         if child:IsA("Frame") then
             child:Destroy()
         end
@@ -706,12 +811,12 @@ local function updateServerList(servers, best)
 
     for _, server in ipairs(sorted) do
         shown += 1
-        if shown > 12 then
+        if shown > 14 then
             break
         end
 
         local item = Instance.new("Frame")
-        item.Parent = scrolling
+        item.Parent = serversScroll
         item.Size = UDim2.new(1, 0, 0, 34)
         item.BackgroundColor3 = (best and server.jobId == best.jobId)
             and Color3.fromRGB(36, 58, 44)
@@ -738,7 +843,7 @@ local function updateServerList(servers, best)
 
     if shown == 0 then
         local item = Instance.new("Frame")
-        item.Parent = scrolling
+        item.Parent = serversScroll
         item.Size = UDim2.new(1, 0, 0, 34)
         item.BackgroundColor3 = Color3.fromRGB(28, 28, 34)
         item.BorderSizePixel = 0
@@ -760,13 +865,109 @@ local function updateServerList(servers, best)
     end
 
     task.wait()
-    scrolling.CanvasSize = UDim2.new(0, 0, 0, layout.AbsoluteContentSize.Y)
+    serversScroll.CanvasSize = UDim2.new(0, 0, 0, serversLayout.AbsoluteContentSize.Y)
+end
+
+local function movePriority(index, direction)
+    local newIndex = index + direction
+    if newIndex < 1 or newIndex > #ENV.BSS_PRIORITY_ORDER then
+        return
+    end
+
+    local tmp = ENV.BSS_PRIORITY_ORDER[index]
+    ENV.BSS_PRIORITY_ORDER[index] = ENV.BSS_PRIORITY_ORDER[newIndex]
+    ENV.BSS_PRIORITY_ORDER[newIndex] = tmp
+end
+
+local refreshSettingsList
+
+refreshSettingsList = function()
+    for _, child in ipairs(settingsScroll:GetChildren()) do
+        if child:IsA("Frame") then
+            child:Destroy()
+        end
+    end
+
+    for index, itemName in ipairs(ENV.BSS_PRIORITY_ORDER) do
+        local row = Instance.new("Frame")
+        row.Parent = settingsScroll
+        row.Size = UDim2.new(1, 0, 0, 38)
+        row.BackgroundColor3 = Color3.fromRGB(28, 28, 34)
+        row.BorderSizePixel = 0
+        row.LayoutOrder = index
+
+        local rowCorner = Instance.new("UICorner")
+        rowCorner.CornerRadius = UDim.new(0, 6)
+        rowCorner.Parent = row
+
+        local rankLabel = Instance.new("TextLabel")
+        rankLabel.Parent = row
+        rankLabel.BackgroundTransparency = 1
+        rankLabel.Position = UDim2.new(0, 10, 0, 0)
+        rankLabel.Size = UDim2.new(0, 28, 1, 0)
+        rankLabel.Font = Enum.Font.GothamBold
+        rankLabel.TextSize = 12
+        rankLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+        rankLabel.Text = tostring(index)
+
+        local nameLabel = Instance.new("TextLabel")
+        nameLabel.Parent = row
+        nameLabel.BackgroundTransparency = 1
+        nameLabel.Position = UDim2.new(0, 42, 0, 0)
+        nameLabel.Size = UDim2.new(1, -120, 1, 0)
+        nameLabel.Font = Enum.Font.Gotham
+        nameLabel.TextSize = 12
+        nameLabel.TextColor3 = Color3.fromRGB(235, 235, 240)
+        nameLabel.TextXAlignment = Enum.TextXAlignment.Left
+        nameLabel.Text = itemName
+
+        local upButton = Instance.new("TextButton")
+        upButton.Parent = row
+        upButton.Size = UDim2.new(0, 28, 0, 24)
+        upButton.Position = UDim2.new(1, -68, 0.5, -12)
+        upButton.BackgroundColor3 = Color3.fromRGB(44, 65, 51)
+        upButton.BorderSizePixel = 0
+        upButton.Font = Enum.Font.GothamBold
+        upButton.TextSize = 14
+        upButton.TextColor3 = Color3.fromRGB(240, 240, 240)
+        upButton.Text = "▲"
+
+        local downButton = Instance.new("TextButton")
+        downButton.Parent = row
+        downButton.Size = UDim2.new(0, 28, 0, 24)
+        downButton.Position = UDim2.new(1, -34, 0.5, -12)
+        downButton.BackgroundColor3 = Color3.fromRGB(65, 44, 44)
+        downButton.BorderSizePixel = 0
+        downButton.Font = Enum.Font.GothamBold
+        downButton.TextSize = 14
+        downButton.TextColor3 = Color3.fromRGB(240, 240, 240)
+        downButton.Text = "▼"
+
+        for _, button in ipairs({upButton, downButton}) do
+            local bc = Instance.new("UICorner")
+            bc.CornerRadius = UDim.new(0, 6)
+            bc.Parent = button
+        end
+
+        upButton.MouseButton1Click:Connect(function()
+            movePriority(index, -1)
+            refreshSettingsList()
+        end)
+
+        downButton.MouseButton1Click:Connect(function()
+            movePriority(index, 1)
+            refreshSettingsList()
+        end)
+    end
+
+    task.wait()
+    settingsScroll.CanvasSize = UDim2.new(0, 0, 0, settingsLayout.AbsoluteContentSize.Y)
 end
 
 local function getCurrentServerText()
-    local currentType = getgenv().BSS_CURRENT_SERVER_TYPE
-    local currentRarity = getgenv().BSS_CURRENT_SERVER_RARITY
-    local currentField = getgenv().BSS_CURRENT_SERVER_FIELD
+    local currentType = ENV.BSS_CURRENT_SERVER_TYPE
+    local currentRarity = ENV.BSS_CURRENT_SERVER_RARITY
+    local currentField = ENV.BSS_CURRENT_SERVER_FIELD
 
     if not currentType or currentType == "" then
         return "Current: none"
@@ -849,6 +1050,13 @@ local function disconnectSproutConn()
     end
 end
 
+local function disconnectViciousConn()
+    if viciousConn then
+        viciousConn:Disconnect()
+        viciousConn = nil
+    end
+end
+
 local function isSproutInstance(obj)
     if not obj then
         return false
@@ -862,7 +1070,7 @@ local function isSproutInstance(obj)
     return obj:IsA("Model") or obj:IsA("BasePart")
 end
 
-local function findSproutModel()
+local function findSproutInstance()
     local sproutsFolder = workspace:FindFirstChild("Sprouts")
     if sproutsFolder then
         local exact = sproutsFolder:FindFirstChild("Sprout")
@@ -893,7 +1101,7 @@ end
 
 local function bindTargetSprout()
     disconnectSproutConn()
-    targetSprout = findSproutModel()
+    targetSprout = findSproutInstance()
     farmedAt = nil
 
     if targetSprout then
@@ -909,20 +1117,48 @@ local function bindTargetSprout()
     return false
 end
 
-local function hasRealSprout()
-    local sprout = findSproutModel()
-    if sprout and sprout.Parent ~= nil then
-        targetSprout = sprout
+local function findViciousInstance()
+    local monsters = workspace:FindFirstChild("Monsters")
+    if monsters then
+        for _, child in ipairs(monsters:GetChildren()) do
+            local lowerName = tostring(child.Name or ""):lower()
+            if lowerName:find("vicious") then
+                return child
+            end
+        end
+    end
+
+    for _, child in ipairs(workspace:GetDescendants()) do
+        local lowerName = tostring(child.Name or ""):lower()
+        if lowerName:find("vicious bee") and (child:IsA("Model") or child:IsA("BasePart")) then
+            return child
+        end
+    end
+
+    return nil
+end
+
+local function bindTargetVicious()
+    disconnectViciousConn()
+    targetVicious = findViciousInstance()
+    viciousGoneAt = nil
+
+    if targetVicious then
+        viciousConn = targetVicious.AncestryChanged:Connect(function(_, parent)
+            if parent == nil and not viciousGoneAt then
+                viciousGoneAt = tick()
+                disconnectViciousConn()
+            end
+        end)
         return true
     end
 
-    targetSprout = nil
     return false
 end
 
 local function waitForSproutDespawn()
-    print("[SPROUT] Real Sprout found, tracking AncestryChanged...")
-    updateSproutStatusUI("🌱 Росток найден: отслеживаю исчезновение...", Color3.fromRGB(120, 255, 120))
+    log("SPROUT found, tracking AncestryChanged...")
+    updateTrackerUI("🌱 Sprout найден: отслеживаю исчезновение...", Color3.fromRGB(120, 255, 120))
 
     while true do
         if not targetSprout or targetSprout.Parent == nil then
@@ -930,14 +1166,12 @@ local function waitForSproutDespawn()
             if farmedAt and (tick() - farmedAt) > WAIT_AFTER_SPROUT_DESPAWN then
                 break
             end
-        else
-            -- здесь можно выполнять фарм, пока росток существует
         end
 
         if farmedAt then
             local elapsed = tick() - farmedAt
             local left = math.max(0, math.ceil(WAIT_AFTER_SPROUT_DESPAWN - elapsed))
-            updateSproutStatusUI("⏳ После исчезновения: " .. tostring(left) .. " сек", Color3.fromRGB(255, 210, 120))
+            updateTrackerUI("⏳ После Sprout: " .. tostring(left) .. " сек", Color3.fromRGB(255, 210, 120))
         end
 
         task.wait()
@@ -948,94 +1182,127 @@ local function waitForSproutDespawn()
     disconnectSproutConn()
 end
 
+local function waitForViciousDespawn()
+    log("VICIOUS found, tracking AncestryChanged...")
+    updateTrackerUI("🐝 Vicious найден: отслеживаю исчезновение...", Color3.fromRGB(255, 160, 120))
+
+    while true do
+        if not targetVicious or targetVicious.Parent == nil then
+            targetVicious = nil
+            if viciousGoneAt then
+                break
+            end
+        end
+        task.wait()
+    end
+
+    targetVicious = nil
+    viciousGoneAt = nil
+    disconnectViciousConn()
+end
+
 local function invalidateCurrentServer()
     local currentJobId = game.JobId
     if currentJobId and currentJobId ~= "" then
         addVisited(currentJobId)
         pushRecent(currentJobId)
-        getgenv().BSS_IGNORE_CURRENT_JOB_ID = currentJobId
+        ENV.BSS_IGNORE_CURRENT_JOB_ID = currentJobId
     end
 
     targetSprout = nil
     farmedAt = nil
     disconnectSproutConn()
 
-    getgenv().BSS_CURRENT_SERVER_TYPE = nil
-    getgenv().BSS_CURRENT_SERVER_RARITY = nil
-    getgenv().BSS_CURRENT_SERVER_FIELD = nil
-    getgenv().BSS_CURRENT_SERVER_JOB_ID = nil
-    getgenv().BSS_NEXT_TELEPORT_COOLDOWN = 0
-    getgenv().BSS_SERVER_JOIN_TIME = tick() - 60
+    targetVicious = nil
+    viciousGoneAt = nil
+    disconnectViciousConn()
+
+    ENV.BSS_CURRENT_SERVER_TYPE = nil
+    ENV.BSS_CURRENT_SERVER_RARITY = nil
+    ENV.BSS_CURRENT_SERVER_FIELD = nil
+    ENV.BSS_CURRENT_SERVER_JOB_ID = nil
+    ENV.BSS_NEXT_TELEPORT_COOLDOWN = 0
+    ENV.BSS_SERVER_JOIN_TIME = tick() - 60
 end
 
 local function applyServerIdentity(server)
     if isVicious(server) and server.gifted == true then
-        getgenv().BSS_CURRENT_SERVER_RARITY = "Gifted"
+        ENV.BSS_CURRENT_SERVER_RARITY = "Gifted"
     else
-        getgenv().BSS_CURRENT_SERVER_RARITY = server.rarity
+        ENV.BSS_CURRENT_SERVER_RARITY = server.rarity
     end
 
-    getgenv().BSS_CURRENT_SERVER_TYPE = server.type
-    getgenv().BSS_CURRENT_SERVER_FIELD = server.field
-    getgenv().BSS_CURRENT_SERVER_JOB_ID = server.jobId
+    ENV.BSS_CURRENT_SERVER_TYPE = server.type
+    ENV.BSS_CURRENT_SERVER_FIELD = server.field
+    ENV.BSS_CURRENT_SERVER_JOB_ID = server.jobId
+end
+
+local function rollbackPendingTeleport(failedJobId)
+    if failedJobId and failedJobId ~= "" then
+        VISITED[failedJobId] = nil
+        removeRecent(failedJobId)
+    end
+
+    if pendingTeleport then
+        ENV.BSS_CURRENT_SERVER_TYPE = pendingTeleport.previousType
+        ENV.BSS_CURRENT_SERVER_RARITY = pendingTeleport.previousRarity
+        ENV.BSS_CURRENT_SERVER_FIELD = pendingTeleport.previousField
+        ENV.BSS_CURRENT_SERVER_JOB_ID = pendingTeleport.previousJobId
+        ENV.BSS_NEXT_TELEPORT_COOLDOWN = pendingTeleport.previousCooldown
+        ENV.BSS_SERVER_JOIN_TIME = pendingTeleport.previousJoinTime
+        ENV.BSS_IGNORE_CURRENT_JOB_ID = pendingTeleport.previousIgnoreJobId
+        pendingTeleport = nil
+    end
 end
 
 local function teleportToServer(best)
     local remaining = getRemainingSeconds(best)
 
-    print("========== SELECTED ==========")
-    print("Type:", best.type)
-    print("Rarity:", best.rarity)
-    print("Field:", best.field)
-    print("Players:", best.playerCount)
-    print("Gifted:", best.gifted)
-    print("Level:", best.level)
-    print("Priority:", getPriority(best))
-    print("Remaining:", remaining == math.huge and "INF" or remaining)
-    print("JobId:", best.jobId)
-    print("==============================")
+    log("========== SELECTED ==========")
+    log("Type:", best.type)
+    log("Rarity:", best.rarity)
+    log("Field:", best.field)
+    log("Players:", best.playerCount)
+    log("Gifted:", best.gifted)
+    log("Level:", best.level)
+    log("Priority:", getPriority(best))
+    log("Remaining:", remaining == math.huge and "INF" or remaining)
+    log("JobId:", best.jobId)
+    log("==============================")
 
     pendingTeleport = {
         jobId = best.jobId,
-        previousType = getgenv().BSS_CURRENT_SERVER_TYPE,
-        previousRarity = getgenv().BSS_CURRENT_SERVER_RARITY,
-        previousJobId = getgenv().BSS_CURRENT_SERVER_JOB_ID,
-        previousField = getgenv().BSS_CURRENT_SERVER_FIELD,
-        previousCooldown = getgenv().BSS_NEXT_TELEPORT_COOLDOWN,
-        previousJoinTime = getgenv().BSS_SERVER_JOIN_TIME,
-        previousIgnoreJobId = getgenv().BSS_IGNORE_CURRENT_JOB_ID,
+        previousType = ENV.BSS_CURRENT_SERVER_TYPE,
+        previousRarity = ENV.BSS_CURRENT_SERVER_RARITY,
+        previousJobId = ENV.BSS_CURRENT_SERVER_JOB_ID,
+        previousField = ENV.BSS_CURRENT_SERVER_FIELD,
+        previousCooldown = ENV.BSS_NEXT_TELEPORT_COOLDOWN,
+        previousJoinTime = ENV.BSS_SERVER_JOIN_TIME,
+        previousIgnoreJobId = ENV.BSS_IGNORE_CURRENT_JOB_ID,
     }
 
     addVisited(best.jobId)
     pushRecent(best.jobId)
     applyServerIdentity(best)
-    getgenv().BSS_NEXT_TELEPORT_COOLDOWN = getCooldownForServer(best)
-    getgenv().BSS_SERVER_JOIN_TIME = tick()
-    getgenv().BSS_IGNORE_CURRENT_JOB_ID = nil
+    ENV.BSS_NEXT_TELEPORT_COOLDOWN = getCooldownForServer(best)
+    ENV.BSS_SERVER_JOIN_TIME = tick()
+    ENV.BSS_IGNORE_CURRENT_JOB_ID = nil
+
     targetSprout = nil
     farmedAt = nil
     disconnectSproutConn()
+
+    targetVicious = nil
+    viciousGoneAt = nil
+    disconnectViciousConn()
 
     local okTeleport, teleportError = pcall(function()
         TeleportService:TeleportToPlaceInstance(placeId, best.jobId, LocalPlayer)
     end)
 
     if not okTeleport then
-        warn("[AUTOHOP] Teleport call failed:", tostring(teleportError))
-        VISITED[best.jobId] = nil
-        removeRecent(best.jobId)
-
-        if pendingTeleport then
-            getgenv().BSS_CURRENT_SERVER_TYPE = pendingTeleport.previousType
-            getgenv().BSS_CURRENT_SERVER_RARITY = pendingTeleport.previousRarity
-            getgenv().BSS_CURRENT_SERVER_FIELD = pendingTeleport.previousField
-            getgenv().BSS_CURRENT_SERVER_JOB_ID = pendingTeleport.previousJobId
-            getgenv().BSS_NEXT_TELEPORT_COOLDOWN = pendingTeleport.previousCooldown
-            getgenv().BSS_SERVER_JOIN_TIME = pendingTeleport.previousJoinTime
-            getgenv().BSS_IGNORE_CURRENT_JOB_ID = pendingTeleport.previousIgnoreJobId
-            pendingTeleport = nil
-        end
-
+        warnf("Teleport call failed:", tostring(teleportError))
+        rollbackPendingTeleport(best.jobId)
         return false
     end
 
@@ -1053,40 +1320,56 @@ local function teleportToNextBestServer(servers)
 end
 
 local function processCurrentSproutServer(servers)
-    if isProcessingSprout then
-        return
-    end
-
-    if getgenv().BSS_CURRENT_SERVER_TYPE ~= "Sprout" then
-        return
-    end
-
     if tick() < worldReadyAt then
-        updateSproutStatusUI("🌱 Ожидание загрузки мира...", Color3.fromRGB(180, 180, 200))
+        updateTrackerUI("🌱 Ожидание загрузки мира...", Color3.fromRGB(180, 180, 200))
         return
     end
 
-    isProcessingSprout = true
+    isProcessingSpecial = true
 
     if bindTargetSprout() then
-        print("[SPROUT] Real Sprout confirmed on server. Tracking targetSprout.")
-        updateSproutStatusUI("✅ На сервере есть реальный Sprout", Color3.fromRGB(100, 255, 100))
+        updateTrackerUI("✅ На сервере есть реальный Sprout", Color3.fromRGB(100, 255, 100))
         waitForSproutDespawn()
-        updateSproutStatusUI("➡️ Переход на следующий сервер...", Color3.fromRGB(100, 255, 100))
+        updateTrackerUI("➡️ Переход на следующий сервер...", Color3.fromRGB(100, 255, 100))
         invalidateCurrentServer()
     else
-        print("[SPROUT] API says Sprout, but no real Sprout found in workspace.")
-        updateSproutStatusUI("❌ На сервере нет реального Sprout", Color3.fromRGB(255, 100, 100))
-
+        updateTrackerUI("❌ На сервере нет реального Sprout", Color3.fromRGB(255, 100, 100))
         invalidateCurrentServer()
         task.wait(0.2)
-
         if servers and #servers > 0 then
             teleportToNextBestServer(servers)
         end
     end
 
-    isProcessingSprout = false
+    isProcessingSpecial = false
+end
+
+local function processCurrentViciousServer(servers)
+    if tick() < worldReadyAt then
+        updateTrackerUI("🐝 Ожидание загрузки мира...", Color3.fromRGB(180, 180, 200))
+        return
+    end
+
+    isProcessingSpecial = true
+
+    if bindTargetVicious() then
+        updateTrackerUI("✅ На сервере есть Vicious", Color3.fromRGB(255, 160, 120))
+        waitForViciousDespawn()
+        updateTrackerUI("➡️ Vicious пропал, хоп...", Color3.fromRGB(255, 160, 120))
+        invalidateCurrentServer()
+        if servers and #servers > 0 then
+            teleportToNextBestServer(servers)
+        end
+    else
+        updateTrackerUI("❌ На сервере нет Vicious", Color3.fromRGB(255, 100, 100))
+        invalidateCurrentServer()
+        task.wait(0.2)
+        if servers and #servers > 0 then
+            teleportToNextBestServer(servers)
+        end
+    end
+
+    isProcessingSpecial = false
 end
 
 TeleportService.TeleportInitFailed:Connect(function(player, result, errorMessage, _, jobId)
@@ -1095,32 +1378,23 @@ TeleportService.TeleportInitFailed:Connect(function(player, result, errorMessage
     end
 
     local failedJobId = jobId or (pendingTeleport and pendingTeleport.jobId)
-    if failedJobId and failedJobId ~= "" then
-        VISITED[failedJobId] = nil
-        removeRecent(failedJobId)
-    end
-
-    if pendingTeleport and failedJobId == pendingTeleport.jobId then
-        getgenv().BSS_CURRENT_SERVER_TYPE = pendingTeleport.previousType
-        getgenv().BSS_CURRENT_SERVER_RARITY = pendingTeleport.previousRarity
-        getgenv().BSS_CURRENT_SERVER_FIELD = pendingTeleport.previousField
-        getgenv().BSS_CURRENT_SERVER_JOB_ID = pendingTeleport.previousJobId
-        getgenv().BSS_NEXT_TELEPORT_COOLDOWN = pendingTeleport.previousCooldown
-        getgenv().BSS_SERVER_JOIN_TIME = pendingTeleport.previousJoinTime
-        getgenv().BSS_IGNORE_CURRENT_JOB_ID = pendingTeleport.previousIgnoreJobId
-        pendingTeleport = nil
-    end
-
-    warn("[AUTOHOP] Teleport failed:", tostring(result), tostring(errorMessage or ""))
+    rollbackPendingTeleport(failedJobId)
+    warnf("Teleport failed:", tostring(result), tostring(errorMessage or ""))
 end)
 
-getgenv().checkCurrentSprout = function()
-    local exists = hasRealSprout()
+ENV.checkCurrentSprout = function()
+    local exists = findSproutInstance() ~= nil
     print("[MANUAL] real sprout exists =", exists)
     return exists
 end
 
-getgenv().setWaitAfterDespawn = function(seconds)
+ENV.checkCurrentVicious = function()
+    local exists = findViciousInstance() ~= nil
+    print("[MANUAL] real vicious exists =", exists)
+    return exists
+end
+
+ENV.setWaitAfterDespawn = function(seconds)
     seconds = tonumber(seconds) or 30
     WAIT_AFTER_SPROUT_DESPAWN = math.max(1, math.min(120, seconds))
     print("[SETTINGS] Wait after Sprout despawn set to", WAIT_AFTER_SPROUT_DESPAWN, "seconds")
@@ -1128,36 +1402,42 @@ getgenv().setWaitAfterDespawn = function(seconds)
 end
 
 markCurrentServer()
+refreshSettingsList()
 
-print("=== AutoHop Sprout Check Listener ===")
-print("Используется targetSprout + AncestryChanged для отслеживания исчезновения.")
-print("Gifted Vicious cooldown увеличен до 55 секунд.")
-print("Sprout ищется как Model или BasePart/MeshPart.")
-print("Поле не проверяется.")
-print("checkCurrentSprout() - проверить, есть ли реальный Sprout")
-print("setWaitAfterDespawn(сек) - изменить задержку после исчезновения")
+log("=== AutoHop Sprout + Vicious ===")
+log("Tabs: Servers / Settings")
+log("Vicious after despawn -> immediate hop")
+log("Gifted Vicious cooldown = 55 sec")
+log("Sprout ищется как Model или BasePart/MeshPart")
 
 while true do
     task.wait(CHECK_DELAY)
 
-    if isProcessingSprout then
+    if isProcessingSpecial then
         continue
     end
 
     local servers = fetchValidated()
     local hasCurrentServer = hydrateCurrentServerFromList(servers)
 
-    local joinedAgo = tick() - getgenv().BSS_SERVER_JOIN_TIME
-    local dynamicCooldown = getgenv().BSS_NEXT_TELEPORT_COOLDOWN or TELEPORT_COOLDOWN
+    local joinedAgo = tick() - ENV.BSS_SERVER_JOIN_TIME
+    local dynamicCooldown = ENV.BSS_NEXT_TELEPORT_COOLDOWN or TELEPORT_COOLDOWN
 
-    if hasCurrentServer and getgenv().BSS_CURRENT_SERVER_TYPE == "Sprout" then
+    if hasCurrentServer and ENV.BSS_CURRENT_SERVER_TYPE == "Sprout" then
         updateTopInfo(nil, false, joinedAgo, dynamicCooldown)
         updateServerList(servers, nil)
         processCurrentSproutServer(servers)
         continue
-    else
-        updateSproutStatusUI("🌱 Sprout: idle", Color3.fromRGB(150, 150, 160))
     end
+
+    if hasCurrentServer and ENV.BSS_CURRENT_SERVER_TYPE == "Vicious" then
+        updateTopInfo(nil, false, joinedAgo, dynamicCooldown)
+        updateServerList(servers, nil)
+        processCurrentViciousServer(servers)
+        continue
+    end
+
+    updateTrackerUI("Tracker: idle", Color3.fromRGB(150, 150, 160))
 
     local best = pickBestServer(servers)
     local force = shouldForceTeleport(best)
